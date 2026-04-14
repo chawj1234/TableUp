@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""TableUp CLI entry — PDF 표/차트 데이터 추출기.
+"""TableUp CLI entry — 문서 표·차트 데이터 추출기.
+
+지원 파일: PDF · 이미지(JPEG, PNG, BMP, TIFF, HEIC) · Office(DOCX, PPTX, XLSX) · 한글(HWP, HWPX)
 
 Usage:
-    python scripts/tableup.py <pdf_path> [옵션]
+    python scripts/tableup.py <file_path> [옵션]
+    python scripts/tableup.py --search "<키워드>"
 
 옵션:
-    --pages N-M         특정 페이지 범위만 처리 (예: 12-15)
-    --no-source         원본 페이지 PNG 생성 생략
+    --pages N-M         PDF 특정 페이지 범위 (비-PDF 에선 무시)
+    --no-source         원본 페이지 PNG 생성 생략 (PDF 만 해당)
     --excel             .xlsx 파일도 함께 생성
-    --out <dir>         출력 디렉토리 (기본: ./.tableup)
+    --out <dir>         출력 디렉토리 (기본: .tableup/<파일명>/)
+    --force             캐시 무시하고 재호출
+    --search <키워드>   CWD/Downloads/Desktop/Documents 에서 부분 파일명 검색
 
 환경변수:
     UPSTAGE_API_KEY     필수. https://console.upstage.ai 에서 발급.
@@ -28,10 +33,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from extract import extract_all, write_index_md, write_meta_json  # noqa: E402
-from upstage_client import UpstageError, run_pipeline  # noqa: E402
+from upstage_client import UpstageError, is_pdf, run_pipeline  # noqa: E402
 
 
 CACHE_DIR = Path.home() / ".cache" / "tableup"
+
+SUPPORTED_EXTS = {
+    ".pdf",
+    ".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".heic",
+    ".docx", ".pptx", ".xlsx",
+    ".hwp", ".hwpx",
+}
 
 
 def parse_page_range(spec: str) -> tuple[int, int]:
@@ -131,9 +143,9 @@ def on_progress(done: int, total: int) -> None:
         print("  제출 완료, 처리 대기 중...", file=sys.stderr)
 
 
-def print_summary(pdf_name: str, result, output_dir: Path) -> None:
+def print_summary(src_name: str, result, output_dir: Path, *, has_sources: bool) -> None:
     print("\n✅ 추출 완료\n")
-    print(f"📄 원본: {pdf_name}")
+    print(f"📄 원본: {src_name}")
     print(f"📁 출력: {output_dir}/")
     print()
     print(f"📊 표 (Tables): {len(result.tables)}")
@@ -157,7 +169,8 @@ def print_summary(pdf_name: str, result, output_dir: Path) -> None:
     print("👉 다음 단계:")
     print(f"   1. {output_dir}/index.md 를 먼저 읽으세요")
     print(f"   2. 필요한 CSV를 pd.read_csv() 로 로드하세요")
-    print(f"   3. 수치 검증은 {output_dir}/sources/p<N>.png 참조")
+    if has_sources:
+        print(f"   3. 수치 검증은 {output_dir}/sources/p<N>.png 참조")
 
 
 def write_excel_copies(result, output_dir: Path) -> None:
@@ -187,9 +200,10 @@ def _normalize(s: str) -> str:
 
 
 def resolve_by_search(term: str) -> Path:
-    """부분 파일명으로 PDF 를 찾는다. 대소문자·NFD/NFC 무시, 최근 수정 순 정렬.
+    """부분 파일명으로 지원 문서를 찾는다. 대소문자·NFD/NFC 무시, 최근 수정 순 정렬.
 
     검색 경로: CWD, ~/Downloads, ~/Desktop, ~/Documents
+    검색 확장자: SUPPORTED_EXTS 전부 (PDF, 이미지, Office, HWP/HWPX)
     """
     term_n = _normalize(term)
     matches: list[Path] = []
@@ -197,7 +211,9 @@ def resolve_by_search(term: str) -> Path:
     for d in DEFAULT_SEARCH_DIRS:
         if not d.exists():
             continue
-        for f in d.glob("*.pdf"):
+        for f in d.iterdir():
+            if not f.is_file() or f.suffix.lower() not in SUPPORTED_EXTS:
+                continue
             rp = f.resolve()
             if rp in seen:
                 continue
@@ -207,14 +223,15 @@ def resolve_by_search(term: str) -> Path:
 
     if not matches:
         raise SystemExit(
-            f"❌ '{term}' 과 매칭되는 PDF 없음.\n"
-            f"   검색 경로: CWD, ~/Downloads, ~/Desktop, ~/Documents"
+            f"❌ '{term}' 과 매칭되는 문서 없음.\n"
+            f"   검색 경로: CWD, ~/Downloads, ~/Desktop, ~/Documents\n"
+            f"   지원 확장자: PDF, 이미지, Office, HWP/HWPX"
         )
 
     matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
     if len(matches) > 1:
-        msg = [f"⚠️  '{term}' 과 매칭되는 PDF 가 여러 개입니다. 더 구체적인 키워드로 재시도하세요:"]
+        msg = [f"⚠️  '{term}' 과 매칭되는 문서가 여러 개입니다. 더 구체적인 키워드로 재시도하세요:"]
         for m in matches[:10]:
             msg.append(f"   • {m}")
         if len(matches) > 10:
@@ -225,47 +242,71 @@ def resolve_by_search(term: str) -> Path:
     return matches[0]
 
 
+def _default_output_dir(src: Path) -> Path:
+    """기본 출력 경로. 같은 CWD 에서 여러 문서를 처리해도 겹치지 않도록 stem 기반 하위 디렉토리 사용."""
+    return Path(".tableup") / src.stem
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description="TableUp — PDF 표·차트 추출")
-    ap.add_argument("pdf", nargs="?", help="처리할 PDF 경로 (--search 사용 시 생략 가능)")
-    ap.add_argument("--search", help="부분 파일명으로 PDF 검색 (CWD/Downloads/Desktop/Documents)")
-    ap.add_argument("--pages", help="페이지 범위 (예: 12-15 또는 12)", default=None)
-    ap.add_argument("--no-source", action="store_true", help="원본 페이지 PNG 생성 생략")
+    ap = argparse.ArgumentParser(description="TableUp — 문서 표·차트 추출")
+    ap.add_argument("file", nargs="?", help="처리할 파일 경로 (--search 사용 시 생략 가능)")
+    ap.add_argument("--search", help="부분 파일명으로 검색 (CWD/Downloads/Desktop/Documents)")
+    ap.add_argument("--pages", help="PDF 페이지 범위 (예: 12-15 또는 12). 비-PDF 에선 무시.", default=None)
+    ap.add_argument("--no-source", action="store_true", help="원본 페이지 PNG 생성 생략 (PDF 만 해당)")
     ap.add_argument("--excel", action="store_true", help="xlsx 파일도 생성")
-    ap.add_argument("--out", default=".tableup", help="출력 디렉토리 (기본: ./.tableup)")
+    ap.add_argument("--out", help="출력 디렉토리 (기본: .tableup/<파일명>/)")
     ap.add_argument("--force", action="store_true", help="캐시 무시")
     args = ap.parse_args()
 
-    if not args.pdf and not args.search:
-        ap.error("PDF 경로 또는 --search 중 하나는 반드시 필요합니다.")
+    if not args.file and not args.search:
+        ap.error("파일 경로 또는 --search 중 하나는 반드시 필요합니다.")
 
-    if args.search and args.pdf:
+    if args.search and args.file:
         print(
-            "⚠️  PDF 경로와 --search 를 모두 주셨습니다. 경로를 우선 사용합니다.",
+            "⚠️  파일 경로와 --search 를 모두 주셨습니다. 경로를 우선 사용합니다.",
             file=sys.stderr,
         )
 
-    if args.pdf:
-        pdf_path = Path(args.pdf).expanduser().resolve()
+    if args.file:
+        src_path = Path(args.file).expanduser().resolve()
     else:
-        pdf_path = resolve_by_search(args.search).resolve()
+        src_path = resolve_by_search(args.search).resolve()
 
-    if not pdf_path.exists():
-        print(f"❌ 파일 없음: {pdf_path}", file=sys.stderr)
+    if not src_path.exists():
+        print(f"❌ 파일 없음: {src_path}", file=sys.stderr)
         return 1
-    if pdf_path.stat().st_size > 50 * 1024 * 1024:
-        print(f"❌ 파일이 50MB 를 초과합니다: {pdf_path.stat().st_size / 1024 / 1024:.1f}MB", file=sys.stderr)
+    if src_path.stat().st_size > 50 * 1024 * 1024:
+        print(
+            f"❌ 파일이 50MB 를 초과합니다: {src_path.stat().st_size / 1024 / 1024:.1f}MB",
+            file=sys.stderr,
+        )
+        return 1
+    if src_path.suffix.lower() not in SUPPORTED_EXTS:
+        print(
+            f"❌ 지원하지 않는 확장자: {src_path.suffix}\n"
+            f"   지원: {', '.join(sorted(SUPPORTED_EXTS))}",
+            file=sys.stderr,
+        )
         return 1
 
-    # 페이지 범위 처리
+    src_is_pdf = is_pdf(src_path)
+
+    # 페이지 범위 처리 (PDF 만)
     if args.pages:
-        start, end = parse_page_range(args.pages)
-        print(f"🔖 페이지 {start}-{end} 만 추출합니다", file=sys.stderr)
-        upload_path = extract_page_range(pdf_path, start, end)
+        if not src_is_pdf:
+            print(
+                f"⚠️  --pages 는 PDF 에서만 유효합니다. {src_path.suffix} 는 전체 처리됩니다.",
+                file=sys.stderr,
+            )
+            upload_path = src_path
+        else:
+            start, end = parse_page_range(args.pages)
+            print(f"🔖 페이지 {start}-{end} 만 추출합니다", file=sys.stderr)
+            upload_path = extract_page_range(src_path, start, end)
     else:
-        upload_path = pdf_path
+        upload_path = src_path
 
-    # 캐시 확인
+    # 캐시 확인 (sha256 기준)
     sha = sha256_file(upload_path)
     response = None
     if not args.force:
@@ -284,8 +325,12 @@ def main() -> int:
         print("", file=sys.stderr)  # 진행바 개행
         save_cached_response(sha, response)
 
-    # 출력 디렉토리 준비 (기존 것 청소)
-    output_dir = Path(args.out).resolve()
+    # 출력 디렉토리 결정 — 기본은 .tableup/<stem>/ (겹침 방지)
+    if args.out:
+        output_dir = Path(args.out).resolve()
+    else:
+        output_dir = _default_output_dir(src_path).resolve()
+
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
@@ -293,38 +338,43 @@ def main() -> int:
     # 추출·저장
     result = extract_all(response, output_dir)
 
-    # 원본 JSON 백업 (디버깅용)
     (output_dir / "_raw_response.json").write_text(
         json.dumps(response, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    # 메타·인덱스
     total_pages = response.get("usage", {}).get("pages", 0)
     write_index_md(
-        result, output_dir, source_name=pdf_path.name, total_pages=total_pages
+        result, output_dir, source_name=src_path.name, total_pages=total_pages
     )
     write_meta_json(
         result,
         output_dir,
         source_sha256=sha,
-        source_name=pdf_path.name,
+        source_name=src_path.name,
         model=response.get("model", "document-parse"),
         total_pages=total_pages,
     )
 
-    # 원본 페이지 이미지
-    if not args.no_source:
+    # 원본 페이지 이미지 (PDF 한정)
+    has_sources = False
+    if src_is_pdf and not args.no_source:
         pages_used = {item.page for item in result.all_items() if item.page}
         if pages_used:
             print(f"🖼️  원본 페이지 {len(pages_used)}장 렌더링 중...", file=sys.stderr)
-            render_source_pages(pdf_path, pages_used, output_dir)
+            render_source_pages(src_path, pages_used, output_dir)
+            has_sources = True
 
-    # Excel 추가 출력
     if args.excel and (result.tables or result.charts):
         write_excel_copies(result, output_dir)
 
-    # 요약 출력
-    print_summary(pdf_path.name, result, output_dir)
+    # 임시 페이지 범위 PDF 정리 (원본 sha256 캐시는 유지)
+    if args.pages and src_is_pdf and upload_path != src_path:
+        try:
+            upload_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    print_summary(src_path.name, result, output_dir, has_sources=has_sources)
     return 0
 
 

@@ -38,7 +38,34 @@ def _require_api_key() -> str:
     return key
 
 
-def _build_multipart(fields: dict, filename: str, pdf_bytes: bytes) -> tuple[bytes, str]:
+_CONTENT_TYPE_BY_EXT = {
+    ".pdf": "application/pdf",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".bmp": "image/bmp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".heic": "image/heic",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".hwp": "application/vnd.hancom.hwp",
+    ".hwpx": "application/vnd.hancom.hwpx",
+}
+
+
+def _content_type_for(path: Path) -> str:
+    return _CONTENT_TYPE_BY_EXT.get(path.suffix.lower(), "application/octet-stream")
+
+
+def is_pdf(path: Path) -> bool:
+    return path.suffix.lower() == ".pdf"
+
+
+def _build_multipart(
+    fields: dict, filename: str, file_bytes: bytes, content_type: str
+) -> tuple[bytes, str]:
     boundary = f"----TableUpBoundary{int(time.time() * 1000)}"
     parts: list[bytes] = []
     for name, value in fields.items():
@@ -50,9 +77,9 @@ def _build_multipart(fields: dict, filename: str, pdf_bytes: bytes) -> tuple[byt
     parts.append(
         f'Content-Disposition: form-data; name="document"; filename="{filename}"'.encode()
     )
-    parts.append(b"Content-Type: application/pdf")
+    parts.append(f"Content-Type: {content_type}".encode())
     parts.append(b"")
-    parts.append(pdf_bytes)
+    parts.append(file_bytes)
     parts.append(f"--{boundary}--".encode())
     parts.append(b"")
     return b"\r\n".join(parts), boundary
@@ -77,16 +104,20 @@ def _split_pdf(pdf_path: Path, start: int, end: int, out_path: Path) -> Path:
 
 
 def _call_sync(
-    pdf_path: Path,
+    file_path: Path,
     *,
     mode: str = "enhanced",
     ocr: str = "auto",
     chart_recognition: bool = True,
     merge_multipage_tables: bool = True,
 ) -> dict:
-    """Upstage sync 엔드포인트를 한 번 호출하여 전체 응답을 반환한다."""
+    """Upstage sync 엔드포인트를 한 번 호출하여 전체 응답을 반환한다.
+
+    PDF 외에 이미지·DOCX·PPTX·XLSX·HWP·HWPX 도 지원한다.
+    """
     api_key = _require_api_key()
-    pdf_bytes = pdf_path.read_bytes()
+    file_bytes = file_path.read_bytes()
+    content_type = _content_type_for(file_path)
 
     fields = {
         "model": "document-parse",
@@ -97,7 +128,7 @@ def _call_sync(
         "chart_recognition": "true" if chart_recognition else "false",
         "merge_multipage_tables": "true" if merge_multipage_tables else "false",
     }
-    body, boundary = _build_multipart(fields, pdf_path.name, pdf_bytes)
+    body, boundary = _build_multipart(fields, file_path.name, file_bytes, content_type)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": f"multipart/form-data; boundary={boundary}",
@@ -152,25 +183,36 @@ def _merge_responses(responses: list[dict], page_offsets: list[int]) -> dict:
 
 
 def run_pipeline(
-    pdf_path: str | Path,
+    file_path: str | Path,
     *,
     mode: str = "enhanced",
     on_progress: Callable[[int, int], None] | None = None,
     chunk_cache_dir: Path | None = None,
     **kwargs,
 ) -> dict:
-    """PDF 를 처리하고 병합된 응답을 반환한다.
+    """문서를 처리하고 병합된 응답을 반환한다.
 
-    - 100페이지 이하: sync 엔드포인트 단일 호출
-    - 100페이지 초과: SYNC_MAX_PAGES 단위로 자동 분할 후 순차 호출
+    - PDF 100페이지 이하 또는 비-PDF: sync 엔드포인트 단일 호출
+    - PDF 100페이지 초과: SYNC_MAX_PAGES 단위로 자동 분할·순차 호출·병합
+    - 분할한 chunk PDF 는 호출 성공 후 자동 정리된다
     """
-    pdf_path = Path(pdf_path)
-    n_pages = _pdf_page_count(pdf_path)
+    file_path = Path(file_path)
+
+    if not is_pdf(file_path):
+        # 비-PDF 는 페이지 개념 없음 → 단일 호출
+        if on_progress:
+            on_progress(0, 1)
+        resp = _call_sync(file_path, mode=mode, **kwargs)
+        if on_progress:
+            on_progress(1, 1)
+        return resp
+
+    n_pages = _pdf_page_count(file_path)
 
     if n_pages <= SYNC_MAX_PAGES:
         if on_progress:
             on_progress(0, n_pages)
-        resp = _call_sync(pdf_path, mode=mode, **kwargs)
+        resp = _call_sync(file_path, mode=mode, **kwargs)
         if on_progress:
             on_progress(n_pages, n_pages)
         return resp
@@ -182,20 +224,27 @@ def run_pipeline(
     responses: list[dict] = []
     offsets: list[int] = []
     pages_done = 0
-    chunk_idx = 0
+    created_chunks: list[Path] = []
     for start in range(1, n_pages + 1, SYNC_MAX_PAGES):
         end = min(start + SYNC_MAX_PAGES - 1, n_pages)
-        chunk_path = chunk_cache_dir / f"{pdf_path.stem}_p{start}-{end}.pdf"
-        _split_pdf(pdf_path, start, end, chunk_path)
+        chunk_path = chunk_cache_dir / f"{file_path.stem}_p{start}-{end}.pdf"
+        _split_pdf(file_path, start, end, chunk_path)
+        created_chunks.append(chunk_path)
         if on_progress:
             on_progress(pages_done, n_pages)
         resp = _call_sync(chunk_path, mode=mode, **kwargs)
         responses.append(resp)
         offsets.append(start - 1)
         pages_done = end
-        chunk_idx += 1
         if on_progress:
             on_progress(pages_done, n_pages)
+
+    # 성공적으로 모든 chunk 를 처리했을 때만 임시 PDF 삭제
+    for p in created_chunks:
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     return _merge_responses(responses, offsets)
 

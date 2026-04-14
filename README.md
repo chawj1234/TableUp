@@ -1,8 +1,19 @@
 # TableUp
 
-**PDF·이미지 문서에서 복잡한 표와 차트 데이터를 CSV로 정확히 추출하는 Claude Code Skill.**
+**문서에서 복잡한 표와 차트 데이터를 CSV로 정확히 추출하는 Claude Code Skill.**
 
 Upstage Document Parse Enhanced 모드를 활용하여 기존 도구(Tabula, Camelot, pdfplumber)가 실패하는 **병합 셀·다단 헤더·회전·스캔·차트 이미지·HWP 변환 PDF**를 처리합니다.
+
+## 지원 파일
+
+| 카테고리 | 확장자 |
+|---|---|
+| **PDF** | `.pdf` (스캔 포함, 100페이지 초과 시 자동 chunk) |
+| **이미지** | `.jpg`, `.jpeg`, `.png`, `.bmp`, `.tif`, `.tiff`, `.heic` |
+| **Office** | `.docx`, `.pptx`, `.xlsx` |
+| **한글** | `.hwp`, `.hwpx` (공공기관·대기업 표준, **Azure/AWS/Google 미지원 영역**) |
+
+파일 크기 50MB 제한.
 
 ## 왜 필요한가
 
@@ -60,12 +71,14 @@ Claude Code: [.tableup/t00_p3_credit-growth-rate.csv 로드 → pandas 분석]
 
 ## 출력 구조
 
+기본은 `./.tableup/<파일명_stem>/` — 같은 CWD 에서 여러 파일을 처리해도 충돌 안 남.
+
 ```
-.tableup/
+.tableup/<파일명>/
 ├── index.md                         # 마스터 맵
 ├── t00_p3_credit-growth-rate.csv    # 실제 데이터 표 (t 접두)
 ├── c00_p4_ai-usage-kr-vs-us.csv     # 차트 유래 데이터 (c 접두)
-├── sources/p3.png                   # 원본 페이지 이미지 (검증용)
+├── sources/p3.png                   # 원본 페이지 이미지 (PDF 만)
 ├── meta.json                        # 메타데이터 (각주·SHA256·모델)
 └── _raw_response.json               # Upstage 원본 응답 (디버그)
 ```
@@ -85,15 +98,16 @@ Claude Code: [.tableup/t00_p3_credit-growth-rate.csv 로드 → pandas 분석]
 ## CLI 옵션
 
 ```
-python scripts/tableup.py <pdf> [옵션]
+python scripts/tableup.py <file> [옵션]
 # 또는
 python scripts/tableup.py --search <키워드> [옵션]
 
---search <키워드>  부분 파일명으로 PDF 검색 (CWD/Downloads/Desktop/Documents)
---pages N-M        특정 페이지 범위 (예: 12-15)
---no-source        원본 페이지 PNG 생성 생략
+--search <키워드>  부분 파일명 검색 (CWD/Downloads/Desktop/Documents)
+                   한국어 NFC/NFD 자동 정규화 지원
+--pages N-M        PDF 특정 페이지 범위 (비-PDF 에선 무시)
+--no-source        원본 페이지 PNG 생성 생략 (PDF 만 해당)
 --excel            xlsx 동시 생성
---out <dir>        출력 디렉토리 (기본: ./.tableup)
+--out <dir>        출력 디렉토리 (기본: .tableup/<파일명>/)
 --force            캐시 무시 재호출
 ```
 
