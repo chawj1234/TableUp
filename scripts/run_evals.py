@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""TableUp 3개 eval 시나리오 자동 실행 & 결과 보고서 생성.
+"""UpParse 3개 eval 시나리오 자동 실행 & 결과 보고서 생성.
 
 Usage:
     python scripts/run_evals.py              # 전부
     python scripts/run_evals.py --only 1     # 시나리오 1만
 
 환경변수 (옵션):
-    TABLEUP_EVAL_BOK_AI     BoK AI 보고서 PDF 경로 (기본: evals/fixtures/bok_ai_report.pdf)
-    TABLEUP_EVAL_BOK_MAIN   BoK 금융안정보고서 PDF 경로 (기본: evals/fixtures/bok_financial_stability_main.pdf)
+    UPPARSE_EVAL_BOK_AI     BoK AI 보고서 PDF 경로 (기본: evals/fixtures/bok_ai_report.pdf)
+    UPPARSE_EVAL_BOK_MAIN   BoK 금융안정보고서 PDF 경로 (기본: evals/fixtures/bok_financial_stability_main.pdf)
 
 fixtures PDF 가 없으면 BoK 공식 URL 에서 자동 다운로드합니다.
 """
@@ -28,15 +28,15 @@ import pandas as pd
 ROOT = Path(__file__).parent.parent
 FIXTURES = ROOT / "evals" / "fixtures"
 RESULTS = ROOT / "evals" / "results"
-TABLEUP = ROOT / "scripts" / "tableup.py"
+UPPARSE = ROOT / "scripts" / "upparse.py"
 
 # 기본 fixture 경로 (환경변수로 오버라이드 가능)
 BOK_AI_PDF = Path(
-    os.environ.get("TABLEUP_EVAL_BOK_AI", str(FIXTURES / "bok_ai_report.pdf"))
+    os.environ.get("UPPARSE_EVAL_BOK_AI", str(FIXTURES / "bok_ai_report.pdf"))
 ).expanduser()
 BOK_MAIN_PDF = Path(
     os.environ.get(
-        "TABLEUP_EVAL_BOK_MAIN", str(FIXTURES / "bok_financial_stability_main.pdf")
+        "UPPARSE_EVAL_BOK_MAIN", str(FIXTURES / "bok_financial_stability_main.pdf")
     )
 ).expanduser()
 
@@ -95,29 +95,29 @@ def _resolve_fixture(primary: Path, url: str | None) -> Path:
         return primary
     raise SystemExit(
         f"❌ 필요한 fixture 파일이 없습니다: {primary}\n"
-        f"   환경변수(TABLEUP_EVAL_BOK_AI / TABLEUP_EVAL_BOK_MAIN)로 경로를 지정하거나\n"
+        f"   환경변수(UPPARSE_EVAL_BOK_AI / UPPARSE_EVAL_BOK_MAIN)로 경로를 지정하거나\n"
         f"   위 경로에 파일을 배치하세요."
     )
 
 
-def run_tableup(pdf: Path, out_dir: Path, extra_args: list[str] | None = None) -> None:
+def run_upparse(pdf: Path, out_dir: Path, extra_args: list[str] | None = None) -> None:
     out_dir.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [sys.executable, str(TABLEUP), str(pdf), "--out", str(out_dir), "--no-source", "--force"]
+    cmd = [sys.executable, str(UPPARSE), str(pdf), "--out", str(out_dir), "--no-source", "--force"]
     if extra_args:
         cmd += extra_args
-    print(f"  실행: tableup.py --out {out_dir.name}")
+    print(f"  실행: upparse.py --out {out_dir.name}")
     try:
         res = subprocess.run(
             cmd, capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT
         )
     except subprocess.TimeoutExpired:
         raise SystemExit(
-            f"❌ tableup.py 가 {SUBPROCESS_TIMEOUT}초 내에 끝나지 않았습니다 (PDF: {pdf.name})."
+            f"❌ upparse.py 가 {SUBPROCESS_TIMEOUT}초 내에 끝나지 않았습니다 (PDF: {pdf.name})."
         )
     if res.returncode != 0:
         print(res.stdout)
         print(res.stderr, file=sys.stderr)
-        raise SystemExit(f"tableup 실행 실패 (exit {res.returncode})")
+        raise SystemExit(f"upparse 실행 실패 (exit {res.returncode})")
 
 
 def load_meta(out_dir: Path) -> dict:
@@ -142,7 +142,7 @@ def eval_complex_table() -> EvalResult:
     print("\n▶ Eval 1: 복잡 표 추출 (BoK 금융안정보고서 p.6 취약차주 표)")
     pdf = _resolve_fixture(BOK_MAIN_PDF, BOK_MAIN_URL)
     out_dir = RESULTS / "e01_complex_table"
-    run_tableup(pdf, out_dir)
+    run_upparse(pdf, out_dir)
 
     result = EvalResult("Eval 1: 복잡 표 추출", "scenario-01-complex-table.md", out_dir)
     meta = load_meta(out_dir)
@@ -185,7 +185,7 @@ def eval_chart_to_data() -> EvalResult:
     print("\n▶ Eval 2: 차트→데이터 (BoK AI 보고서 p.5)")
     pdf = _resolve_fixture(BOK_AI_PDF, BOK_AI_URL)
     out_dir = RESULTS / "e02_chart_to_data"
-    run_tableup(pdf, out_dir)
+    run_upparse(pdf, out_dir)
 
     result = EvalResult("Eval 2: 차트→데이터", "scenario-02-chart-to-data.md", out_dir)
     meta = load_meta(out_dir)
@@ -246,7 +246,7 @@ def eval_hwp_derived() -> EvalResult:
     print("\n▶ Eval 3: HWP 유래 PDF 전체 처리 (BoK 금융안정보고서 77p)")
     pdf = _resolve_fixture(BOK_MAIN_PDF, BOK_MAIN_URL)
     out_dir = RESULTS / "e03_hwp_derived"
-    run_tableup(pdf, out_dir)
+    run_upparse(pdf, out_dir)
 
     result = EvalResult("Eval 3: HWP 유래 PDF", "scenario-03-hwp-derived.md", out_dir)
     meta = load_meta(out_dir)
@@ -295,7 +295,7 @@ def eval_hwp_derived() -> EvalResult:
 
 def write_report(results: list[EvalResult], out: Path) -> None:
     lines = [
-        f"# TableUp Eval 결과 ({datetime.date.today()})",
+        f"# UpParse Eval 결과 ({datetime.date.today()})",
         "",
         f"- 총 시나리오: {len(results)}",
         f"- Pass: {sum(1 for r in results if r.passed)}",

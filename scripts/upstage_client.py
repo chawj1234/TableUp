@@ -6,8 +6,8 @@
 - 기본 모드는 `auto` (페이지별 자동 분류). `enhanced`, `standard` 도 선택 가능.
 
 환경변수 오버라이드:
-- TABLEUP_MAX_WORKERS: 동시 chunk 호출 수 (기본 2, Upstage rate limit 2 RPS 안전 범위)
-- TABLEUP_CHUNK_SIZE: chunk 당 페이지 수 (기본 100, sync 엔드포인트 최대)
+- UPPARSE_MAX_WORKERS: 동시 chunk 호출 수 (기본 2, Upstage rate limit 2 RPS 안전 범위)
+- UPPARSE_CHUNK_SIZE: chunk 당 페이지 수 (기본 100, sync 엔드포인트 최대)
 """
 from __future__ import annotations
 
@@ -26,18 +26,18 @@ from typing import Callable
 
 API_BASE = "https://api.upstage.ai/v1/document-digitization"
 
-SYNC_MAX_PAGES = int(os.environ.get("TABLEUP_CHUNK_SIZE", "100"))
+SYNC_MAX_PAGES = int(os.environ.get("UPPARSE_CHUNK_SIZE", "100"))
 MAX_RETRIES = 4
 REQUEST_TIMEOUT = 900  # 최대 15분
-DEFAULT_MAX_WORKERS = int(os.environ.get("TABLEUP_MAX_WORKERS", "2"))
+DEFAULT_MAX_WORKERS = int(os.environ.get("UPPARSE_MAX_WORKERS", "2"))
 
 
 def _default_cache_dir() -> Path:
-    """tableup.py 와 동일하게 TABLEUP_CACHE_DIR override 를 존중한다."""
-    env = os.environ.get("TABLEUP_CACHE_DIR")
+    """upparse.py 와 동일하게 UPPARSE_CACHE_DIR override 를 존중한다."""
+    env = os.environ.get("UPPARSE_CACHE_DIR")
     if env:
         return Path(env).expanduser()
-    return Path.home() / ".cache" / "tableup"
+    return Path.home() / ".cache" / "upparse"
 
 
 class UpstageError(Exception):
@@ -88,7 +88,7 @@ def _build_multipart(
     fields: dict, filename: str, file_bytes: bytes, content_type: str
 ) -> tuple[bytes, str]:
     # 고유 boundary (병렬 호출 시 ms 해상도 충돌 방지)
-    boundary = f"----TableUpBoundary{secrets.token_hex(16)}"
+    boundary = f"----UpParseBoundary{secrets.token_hex(16)}"
     parts: list[bytes] = []
     for name, value in fields.items():
         parts.append(f"--{boundary}".encode())
@@ -116,7 +116,7 @@ def _pdf_page_count(pdf_path: Path) -> int:
 def split_pdf_pages(pdf_path: Path, start: int, end: int, out_path: Path) -> Path:
     """pypdfium2 로 start..end (1-indexed, 포함) 범위만 추출해 새 PDF 로 저장한다.
 
-    tableup.py 의 페이지 범위 추출과 chunk 분할이 공유하는 단일 구현.
+    upparse.py 의 페이지 범위 추출과 chunk 분할이 공유하는 단일 구현.
     """
     import pypdfium2 as pdfium
 
@@ -257,7 +257,7 @@ def run_pipeline(
     except OSError as e:
         raise UpstageError(
             f"chunk 캐시 디렉터리 생성 실패: {chunk_cache_dir}\n"
-            f"   TABLEUP_CACHE_DIR 환경변수로 쓰기 가능한 경로를 지정하세요. ({e})"
+            f"   UPPARSE_CACHE_DIR 환경변수로 쓰기 가능한 경로를 지정하세요. ({e})"
         ) from e
     prefix = f"{source_sha[:8]}_" if source_sha else ""
 

@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
-"""TableUp CLI entry — 문서 표·차트 데이터 추출기.
+"""UpParse CLI entry — 문서의 표·차트·도식 데이터 추출기.
 
 지원 파일: PDF · 이미지(JPEG, PNG, BMP, TIFF, HEIC) · Office(DOCX, PPTX, XLSX) · 한글(HWP, HWPX)
 
 Usage:
-    python scripts/tableup.py <file_path> [옵션]
-    python scripts/tableup.py --search "<키워드>" [옵션]
+    python scripts/upparse.py <file_path> [옵션]
+    python scripts/upparse.py --search "<키워드>" [옵션]
 
 옵션:
     --mode {auto,enhanced,standard}  Upstage 처리 모드 (기본: auto, 페이지별 자동 분류)
     --pages N-M         PDF 특정 페이지 범위 (비-PDF 에선 무시)
     --no-source         원본 페이지 PNG 생성 생략 (PDF 만 해당)
     --excel             .xlsx 파일도 함께 생성
-    --out <dir>         출력 디렉토리 (기본: .tableup/<파일명>/)
+    --out <dir>         출력 디렉토리 (기본: .upparse/<파일명>/)
     --force             캐시 무시 + 출력 디렉토리 덮어쓰기 허용
     --search <키워드>   CWD/Downloads/Desktop/Documents 에서 부분 파일명 검색
 
 환경변수:
-    UPSTAGE_API_KEY     필수. https://console.upstage.ai 에서 발급.
+    UPSTAGE_API_KEY      필수. https://console.upstage.ai 에서 발급.
+    UPPARSE_CACHE_DIR    캐시 경로 override (기본 ~/.cache/upparse)
+    UPPARSE_MAX_WORKERS  chunk 병렬 호출 수 (기본 2)
+    UPPARSE_CHUNK_SIZE   chunk 당 페이지 수 (기본 100)
 """
 from __future__ import annotations
 
@@ -77,11 +80,11 @@ from upstage_client import (  # noqa: E402
 
 
 def _resolve_cache_dir() -> Path:
-    """TABLEUP_CACHE_DIR override 지원. 기본은 ~/.cache/tableup."""
-    env = os.environ.get("TABLEUP_CACHE_DIR")
+    """UPPARSE_CACHE_DIR override 지원. 기본은 ~/.cache/upparse."""
+    env = os.environ.get("UPPARSE_CACHE_DIR")
     if env:
         return Path(env).expanduser()
-    return Path.home() / ".cache" / "tableup"
+    return Path.home() / ".cache" / "upparse"
 
 
 CACHE_DIR = _resolve_cache_dir()
@@ -246,7 +249,7 @@ def save_cached_response(sha256: str, mode: str, response: dict) -> None:
     except OSError as e:
         raise SystemExit(
             f"❌ 캐시 디렉터리 생성 실패: {CACHE_DIR}\n"
-            f"   TABLEUP_CACHE_DIR 환경변수로 쓰기 가능한 경로를 지정하세요. ({e})"
+            f"   UPPARSE_CACHE_DIR 환경변수로 쓰기 가능한 경로를 지정하세요. ({e})"
         )
     get_cache_path(sha256, mode).write_text(
         json.dumps(response, ensure_ascii=False), encoding="utf-8"
@@ -304,6 +307,15 @@ def print_summary(src_name: str, result, output_dir: Path, *, has_sources: bool)
         print(f"   {c.csv_path.name}  [{c.n_rows}×{c.n_cols}]  {cap[:40]}")
     if len(result.charts) > 10:
         print(f"   ... 외 {len(result.charts) - 10}개")
+    if getattr(result, "figures", None):
+        print()
+        print(f"🖼️  도식·다이어그램 (Figures): {len(result.figures)} (데이터 표 아님)")
+        for f in result.figures[:5]:
+            ftype = f.figure_type or "figure"
+            cap = (f.caption or "(제목 없음)")[:40]
+            print(f"   p.{f.page}  [{ftype}]  {cap}")
+        if len(result.figures) > 5:
+            print(f"   ... 외 {len(result.figures) - 5}개 (index.md 참고)")
     if result.boundary_cases:
         print(f"\n⚠️  경계 케이스: {len(result.boundary_cases)} (meta.json 참고)")
     if result.footnotes:
@@ -332,12 +344,12 @@ def write_excel_copies(result, output_dir: Path) -> None:
 # ----- 출력 디렉토리 안전성 -----
 
 
-TABLEUP_MARKERS = ("_raw_response.json", "meta.json", "index.md")
+UPPARSE_MARKERS = ("_raw_response.json", "meta.json", "index.md")
 
 
-def _looks_like_tableup_output(path: Path) -> bool:
-    """기존 .tableup 출력 흔적이 있는지."""
-    return any((path / m).exists() for m in TABLEUP_MARKERS)
+def _looks_like_upparse_output(path: Path) -> bool:
+    """기존 .upparse 출력 흔적이 있는지."""
+    return any((path / m).exists() for m in UPPARSE_MARKERS)
 
 
 def _is_dir_empty(path: Path) -> bool:
@@ -353,8 +365,8 @@ def _is_dir_empty(path: Path) -> bool:
 def _prepare_output_dir(output_dir: Path, *, is_default_path: bool, force: bool) -> None:
     """출력 디렉토리 안전하게 준비. 사용자 데이터 덮어쓰기 방지.
 
-    기본 경로(.tableup/<stem>/) 라도 마커 없이 사용자 데이터가 들어있을 수 있으므로
-    동일하게 TableUp 출력 흔적·빈 디렉터리 여부를 확인한다. --force 는 모든 게이트를 뚫는다.
+    기본 경로(.upparse/<stem>/) 라도 마커 없이 사용자 데이터가 들어있을 수 있으므로
+    동일하게 UpParse 출력 흔적·빈 디렉터리 여부를 확인한다. --force 는 모든 게이트를 뚫는다.
     """
     if not output_dir.exists():
         output_dir.mkdir(parents=True)
@@ -364,7 +376,7 @@ def _prepare_output_dir(output_dir: Path, *, is_default_path: bool, force: bool)
         raise SystemExit(f"❌ --out 경로가 디렉토리가 아닙니다: {output_dir}")
 
     safe_to_overwrite = (
-        _looks_like_tableup_output(output_dir) or _is_dir_empty(output_dir)
+        _looks_like_upparse_output(output_dir) or _is_dir_empty(output_dir)
     )
     if safe_to_overwrite or force:
         shutil.rmtree(output_dir)
@@ -373,7 +385,7 @@ def _prepare_output_dir(output_dir: Path, *, is_default_path: bool, force: bool)
 
     hint = " (기본 경로)" if is_default_path else ""
     raise SystemExit(
-        f"❌ {output_dir}{hint} 는 비어있지 않고 TableUp 출력이 아닙니다.\n"
+        f"❌ {output_dir}{hint} 는 비어있지 않고 UpParse 출력이 아닙니다.\n"
         f"   덮어쓰려면 --force 를 추가하거나 다른 --out 경로를 사용하세요."
     )
 
@@ -382,7 +394,7 @@ def _prepare_output_dir(output_dir: Path, *, is_default_path: bool, force: bool)
 
 
 def _default_output_dir(src: Path) -> Path:
-    return Path(".tableup") / src.stem
+    return Path(".upparse") / src.stem
 
 
 def _resolve_source(args: argparse.Namespace) -> Path:
@@ -480,7 +492,8 @@ def _emit_outputs(
 
     has_sources = False
     if src_is_pdf and render_sources:
-        pages_used = {item.page for item in result.all_items() if item.page}
+        # 표·차트 뿐 아니라 figure 가 있는 페이지도 원본 PNG 를 만든다 (검증·vision 재확인용)
+        pages_used = result.pages_with_visuals()
         if pages_used:
             print(f"🖼️  원본 페이지 {len(pages_used)}장 렌더링 중...", file=sys.stderr)
             render_source_pages(src_path, pages_used, output_dir)
@@ -493,7 +506,7 @@ def _emit_outputs(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="TableUp — 문서 표·차트 추출")
+    ap = argparse.ArgumentParser(description="UpParse — 문서 표·차트·도식 추출")
     ap.add_argument("file", nargs="?", help="처리할 파일 경로 (--search 사용 시 생략 가능)")
     ap.add_argument("--search", help="부분 파일명으로 검색 (CWD/Downloads/Desktop/Documents)")
     ap.add_argument(
@@ -505,7 +518,7 @@ def main() -> int:
     ap.add_argument("--pages", help="PDF 페이지 범위 (예: 12-15 또는 12). 비-PDF 에선 무시.")
     ap.add_argument("--no-source", action="store_true", help="원본 페이지 PNG 생성 생략")
     ap.add_argument("--excel", action="store_true", help="xlsx 파일도 생성")
-    ap.add_argument("--out", help="출력 디렉토리 (기본: .tableup/<파일명>/)")
+    ap.add_argument("--out", help="출력 디렉토리 (기본: .upparse/<파일명>/)")
     ap.add_argument("--force", action="store_true", help="캐시 무시 + 출력 덮어쓰기 허용")
     args = ap.parse_args()
 

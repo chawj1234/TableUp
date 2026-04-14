@@ -21,8 +21,8 @@ Thumbs.db
 .idea/
 *.swp
 
-# TableUp outputs — 개인 실행 결과는 커밋하지 않음
-.tableup/
+# UpParse outputs — 개인 실행 결과는 커밋하지 않음
+.upparse/
 evals/results/
 evals/fixtures/*.pdf
 

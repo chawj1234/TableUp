@@ -1,6 +1,6 @@
 # 분류 규칙 (classification rules)
 
-Upstage Document Parse 응답의 `element.category` 값만으로는 **실제 데이터 표**, **차트 이미지**, **각주·출처 메타**를 구분하기 어렵다. TableUp 은 다음 규칙으로 후처리 분류한다.
+Upstage Document Parse 응답의 `element.category` 값만으로는 **실제 데이터 표**, **차트 이미지**, **각주·출처 메타**를 구분하기 어렵다. UpParse 은 다음 규칙으로 후처리 분류한다.
 
 ## 4가지 분류 라벨
 

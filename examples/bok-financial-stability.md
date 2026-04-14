@@ -10,7 +10,7 @@
 ## 실행
 
 ```bash
-python scripts/tableup.py "AI의 빠른 확산과 생산성 효과-한국은행.pdf"
+python scripts/upparse.py "AI의 빠른 확산과 생산성 효과-한국은행.pdf"
 ```
 
 ## stdout 요약
@@ -23,7 +23,7 @@ python scripts/tableup.py "AI의 빠른 확산과 생산성 효과-한국은행.
 ✅ 추출 완료
 
 📄 원본: AI의 빠른 확산과 생산성 효과-한국은행.pdf
-📁 출력: /path/to/.tableup/
+📁 출력: /path/to/.upparse/
 
 📊 표 (Tables): 1
    t00_p1_table-p1.csv  [3×4]  (제목 없음)

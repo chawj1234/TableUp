@@ -43,7 +43,7 @@ Tabula·Camelot 같은 기존 PDF 도구가 **완전히 실패**하고 Claude vi
 | Tabula-py | 0% (차트 인식 불가) |
 | Camelot | 0% |
 | Claude vision (native) | 차트 타입은 OK, 숫자는 ±10% 환각 발생 |
-| **TableUp** | **≥95% 정확도 목표** (실측 100%) |
+| **UpParse** | **≥95% 정확도 목표** (실측 100%) |
 
 ## 측정 (실제 실행 지점)
 

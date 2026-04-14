@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TableUp 설치 스크립트 — Claude Code skills 디렉터리에 심링크를 만든다.
+# UpParse 설치 스크립트 — Claude Code skills 디렉터리에 심링크를 만든다.
 #
 # 설치 위치 결정 순서:
 #   1. --target <dir>  (명시적 지정) → 그 디렉터리에만 설치
@@ -9,7 +9,7 @@
 #        - $CLAUDE_CONFIG_DIR  (위에 안 잡힌 추가 경로)
 set -euo pipefail
 
-SKILL_NAME="tableup"
+SKILL_NAME="upparse"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ---- OS 감지 ----
@@ -86,7 +86,7 @@ else
     fi
 fi
 
-echo "📦 TableUp 설치 중..."
+echo "📦 UpParse 설치 중..."
 echo "   소스: ${SRC_DIR}"
 echo "   대상 프로필: ${#PROFILES[@]}개"
 
@@ -133,6 +133,6 @@ echo ""
 echo "🔑 API 키 설정 (아직 안 했다면):"
 echo "   ${SRC_DIR}/.env 파일에 UPSTAGE_API_KEY=... 로 저장"
 echo ""
-echo "🚀 Claude Code 재시작 후 /tableup 으로 호출 가능합니다."
+echo "🚀 Claude Code 재시작 후 /upparse 로 호출 가능합니다."
 
 [[ $SUCCESS -gt 0 ]] || exit 1

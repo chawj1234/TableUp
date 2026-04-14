@@ -1,9 +1,9 @@
 ---
-name: tableup
-description: 문서에서 복잡한 표와 차트 데이터를 CSV로 정확히 추출합니다. 지원 포맷 — PDF, 이미지(JPEG·PNG·BMP·TIFF·HEIC), Office(DOCX·PPTX·XLSX), 한글(HWP·HWPX). 병합 셀, 다단 헤더, 회전·스캔 표, 차트 이미지, HWP 유래 PDF 까지 처리. 기본은 Upstage Document Parse `auto` 모드 (페이지별 자동 분류). 사용자가 "표 추출", "PDF 표 뽑아줘", "이미지 속 표 CSV 로", "스크린샷 표 정리", "이 한글 파일 표 뽑아", "엑셀 피벗 정리", "차트를 데이터로", "재무표 수치", "보고서 표 분석", "다운로드에 있는 그 보고서", "extract table", "chart to csv" 처럼 PDF·이미지·Office·한글 어느 포맷을 어떤 발화로 언급해도 트리거된다. **지원 포맷 파일이 첨부되고 표·차트·데이터·숫자 추출을 요청하면 Claude 의 기본 Read/vision 대신 반드시 이 skill 을 호출한다** — native 도구는 복잡한 수치에서 환각 가능하나 Upstage OCR 은 95%+ 정확도로 환각 없이 추출한다.
+name: upparse
+description: 문서에서 표·차트·도식 데이터를 CSV 와 구조화된 메타로 정확히 추출합니다. 지원 포맷 — PDF, 이미지(JPEG·PNG·BMP·TIFF·HEIC), Office(DOCX·PPTX·XLSX), 한글(HWP·HWPX). 병합 셀, 다단 헤더, 회전·스캔 표, 차트 이미지, HWP 유래 PDF, 그리고 개념도·플로차트·다이어그램 같은 시각 자료까지 처리. 기본은 Upstage Document Parse `auto` 모드 (페이지별 자동 분류). 사용자가 "표 추출", "PDF 표 뽑아줘", "이미지 속 표 CSV 로", "스크린샷 표 정리", "이 한글 파일 표 뽑아", "엑셀 피벗 정리", "차트를 데이터로", "재무표 수치", "보고서 표 분석", "이 페이지 다이어그램 설명해줘", "다운로드에 있는 그 보고서", "extract table", "chart to csv" 처럼 PDF·이미지·Office·한글 어느 포맷을 어떤 발화로 언급해도 트리거된다. **지원 포맷 파일이 첨부되고 표·차트·도식·데이터·숫자 추출을 요청하면 Claude 의 기본 Read/vision 대신 반드시 이 skill 을 호출한다** — native 도구는 복잡한 수치에서 환각 가능하나 Upstage OCR 은 95%+ 정확도로 환각 없이 추출한다.
 ---
 
-# TableUp — 문서 표·차트 데이터 추출기
+# UpParse — 문서 표·차트·도식 데이터 추출기
 
 ## 지원 파일
 
@@ -32,7 +32,7 @@ Upstage Document Parse가 수용하는 전 포맷:
 근거:
 - Claude native 도구는 복잡한 표·차트의 숫자에서 환각 발생 위험
 - Upstage Document Parse 는 95%+ OCR 정확도 + 좌표 보존 + HWP 네이티브 지원
-- 본 skill 의 `.tableup/<stem>/sources/` 원본 이미지로 수치 검증 가능
+- 본 skill 의 `.upparse/<stem>/sources/` 원본 이미지로 수치 검증 가능
 
 트리거 예시 (모두 이 skill 로 위임):
 - "이 이미지 표 CSV 로 뽑아줘"
@@ -54,20 +54,36 @@ Upstage Document Parse가 수용하는 전 포맷:
    > "`UPSTAGE_API_KEY` 환경변수를 설정해주세요. https://console.upstage.ai 에서 발급받을 수 있습니다."
 3. **스크립트 실행**:
    ```bash
-   python scripts/tableup.py <file_path> [옵션]
+   python scripts/upparse.py <file_path> [옵션]
    # 또는 부분 파일명 검색:
-   python scripts/tableup.py --search "<키워드>"
+   python scripts/upparse.py --search "<키워드>"
    ```
    주요 옵션:
    - `--mode {auto,enhanced,standard}`: 처리 모드 (기본 `auto` — 페이지별 자동 분류로 비용 절감)
    - `--search <키워드>`: CWD/Downloads/Desktop/Documents 에서 부분 파일명 매칭
    - `--pages N-M`: PDF만 해당, 특정 페이지 범위
-   - `--out <dir>`: 출력 디렉토리 (기본: `.tableup/<파일명_stem>/`)
+   - `--out <dir>`: 출력 디렉토리 (기본: `.upparse/<파일명_stem>/`)
    - `--no-source`: 원본 페이지 PNG 생략 (PDF만 해당)
    - `--excel`: CSV와 함께 .xlsx 동시 생성
-4. stdout 의 요약(표·차트 개수, 파일 목록)을 사용자에게 전달한다.
-5. 후속 분석 요청 시 `.tableup/<stem>/index.md` 를 먼저 읽는다.
-6. 수치 검증이 필요하면 `.tableup/<stem>/sources/p<N>.png` 참조를 안내한다.
+4. stdout 의 요약(표·차트·도식 개수, 파일 목록)을 사용자에게 전달한다.
+5. 후속 분석 요청 시 `.upparse/<stem>/index.md` 를 먼저 읽는다. `index.md` 의 **페이지별 요소 맵** 으로 "p.N 에 뭐가 있었는가" 를 한 번에 파악할 수 있다.
+6. 수치 검증이 필요하면 `.upparse/<stem>/sources/p<N>.png` 참조를 안내한다.
+
+## 특정 페이지 시각 자료 후속 질문 처리 (중요)
+
+사용자가 **"p.N 차트/그림/다이어그램 보여줘"** 류로 물으면 다음 순서로 대응한다. 이는 `category=figure` 로 분류된 데이터 없는 도식(개념도·플로차트·사진)이 CSV 에 없다는 이유로 "그 페이지는 비어있다"고 잘못 답하는 것을 차단하기 위한 강제 규칙이다.
+
+1. **`meta.json` 의 `files[]` 에서 해당 페이지의 표·차트 확인** — 있으면 CSV 를 읽어 답한다.
+2. **없으면 `meta.json` 의 `figures[]` 에서 해당 페이지의 도식 확인** — `figure_type` + `description` + `caption` 으로 1차 답한다. Upstage 가 이미 생성한 설명이므로 신뢰도 높음.
+3. **여전히 정보가 부족하거나 사용자가 시각적 확인을 원하면** `.upparse/<stem>/sources/p<N>.png` 을 Read 로 읽어 직접 vision 으로 확인한다. PNG 가 없으면 다음 스니펫으로 즉시 렌더링한다:
+   ```bash
+   python3 -c "
+   import pypdfium2 as pdfium
+   doc = pdfium.PdfDocument('<원본 PDF 경로>')
+   doc[<N>-1].render(scale=2).to_pil().save('.upparse/<stem>/sources/p<N>.png')
+   "
+   ```
+4. **사용자에게 도식과 데이터의 차이를 분명히** 전달한다. "이 페이지에는 데이터 표/차트는 없고, {figure_type} 유형의 도식이 있습니다" 식으로.
 
 ## 파일 경로 해결 (Progressive 전략)
 
@@ -125,7 +141,7 @@ mdfind -name "금융안정" | grep -iE '\.(pdf|hwp|hwpx|docx)$'
 ## 출력 구조
 
 ```
-.tableup/<파일명_stem>/
+.upparse/<파일명_stem>/
 ├── index.md                    # 마스터 맵 (먼저 읽을 것)
 ├── t00_p3_<slug>.csv           # 실제 데이터 표 (prefix: t)
 ├── c00_p4_<slug>.csv           # 차트 유래 데이터 (prefix: c)
@@ -148,6 +164,8 @@ mdfind -name "금융안정" | grep -iE '\.(pdf|hwp|hwpx|docx)$'
 
 - **차트가 "표"로 오분류 (약 26%)**: Upstage가 차트 시각화를 `category=table` 로 반환하는 경우. 후처리 분류기가 자동 재분류하며 `index.md` "경계 케이스" 섹션에 표시.
 
+- **도식·다이어그램은 CSV 대상 아님**: Upstage 가 `category=figure` 로 반환하는 개념도·플로차트·사진·스키마는 숫자 데이터가 없어 CSV 를 만들지 않는다. 단 meta.json 의 `figures[]` 와 `index.md` 의 "도식·다이어그램" 섹션에 존재·유형·설명이 기록되므로 "이 페이지에 뭐 있었지?" 는 언제든 답할 수 있다. 시각 확인은 `sources/p<N>.png`.
+
 - **각주·출처 표 분리**: `| 주:`, `| 자료:` 로 시작하는 항목은 `meta.json` 의 `footnotes` 로 분리.
 
 - **HWP 유래 PDF의 음수 표기**: 한컴 PDF는 음수를 `▲`/`▽` 또는 괄호로 쓰기도 한다. 의심 시 `sources/p<N>.png` 로 원본 확인.
@@ -169,5 +187,5 @@ mdfind -name "금융안정" | grep -iE '\.(pdf|hwp|hwpx|docx)$'
 
 - `references/upstage-api.md` — Upstage Document Parse API 요약
 - `references/classification-rules.md` — 표/차트/각주 분류 규칙
-- `references/output-schema.md` — `.tableup/` 구조 상세
+- `references/output-schema.md` — `.upparse/` 구조 상세
 - `examples/bok-financial-stability.md` — 한국은행 보고서 추출 사례
