@@ -33,7 +33,7 @@ Claude Code 재시작 후 자동으로 `/tableup` 호출 가능.
 ### 기본
 ```
 You: 이 PDF에서 표 뽑아줘 — ./report.pdf
-Claude: [Upstage Enhanced 호출 → .tableup/ 생성 → 요약 안내]
+Claude Code: [Upstage Enhanced 호출 → .tableup/ 생성 → 요약 안내]
 ```
 
 ### 페이지 범위 지정
@@ -44,7 +44,7 @@ You: /tableup ./large.pdf 로 p.12~15 재무제표만 뽑아줘
 ### 뽑은 후 분석
 ```
 You: 방금 뽑은 신용증가율 표에서 전년 대비 변화율 계산해줘
-Claude: [.tableup/t00_p3_credit-growth-rate.csv 로드 → pandas 분석]
+Claude Code: [.tableup/t00_p3_credit-growth-rate.csv 로드 → pandas 분석]
 ```
 
 ## 출력 구조
@@ -83,9 +83,6 @@ python scripts/tableup.py <pdf> [옵션]
 --force            캐시 무시 재호출
 ```
 
-## 캐싱
-
-`~/.cache/tableup/` 에 SHA256 기준으로 저장됩니다. 같은 PDF 재호출 시 API 비용·시간 0.
 
 ## 평가
 
@@ -99,13 +96,3 @@ python scripts/tableup.py <pdf> [옵션]
 - 파일 크기: 최대 50MB
 - 페이지 수: 최대 100페이지 (async 기준 1,000페이지까지 확장 예정)
 - API 비용: Enhanced mode 기준 페이지당 약 $0.03
-
-## 라이선스
-
-MIT
-
-## 감사의 말
-
-- [Upstage](https://upstage.ai) — Document Parse Enhanced mode
-- [Anthropic](https://anthropic.com) — Claude Code Skills 체계
-- Upstage Edu Ambassador 2기 미션으로 제작됨
