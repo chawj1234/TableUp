@@ -5,6 +5,9 @@
 2. HTML 표 → pandas DataFrame (rowspan/colspan 유지)
 3. 의미 기반 파일명 생성 (캡션 슬러그화)
 4. .tableup/ 출력 일체
+
+참고: 현재 분류 규칙(각주 접두·축값 힌트)은 한국 공공·금융 문서를
+기준으로 튜닝되어 있다. 다른 locale 문서에 적용 시 규칙 확장 필요.
 """
 from __future__ import annotations
 
@@ -14,7 +17,8 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+
+import pandas as pd
 
 # ----- 분류 -----
 
@@ -41,7 +45,6 @@ def classify_element(el: dict) -> str:
     if category != "table":
         return "other"
 
-    # category == 'table' 인 경우 세부 분류
     if md.startswith(FOOTNOTE_PREFIX):
         return "footnote"
 
@@ -50,7 +53,7 @@ def classify_element(el: dict) -> str:
     if br_count >= CHART_LIKE_BR_THRESHOLD and has_axis:
         return "chart_misid"
 
-    # 숫자 밀도 기반 보수적 판정: 너무 적으면 데이터 표가 아닐 수 있음
+    # 숫자 밀도가 극히 낮으면 데이터 표가 아닐 수 있음
     digit_ratio = sum(c.isdigit() for c in md) / max(len(md), 1)
     if digit_ratio < 0.01 and len(md) > 50:
         return "other"
@@ -61,13 +64,11 @@ def classify_element(el: dict) -> str:
 # ----- HTML → DataFrame -----
 
 
-def html_table_to_dataframe(html: str):
-    """HTML 문자열의 <table> 을 pandas DataFrame 으로 변환."""
-    import pandas as pd
-
+def html_table_to_dataframe(html: str) -> pd.DataFrame:
+    """HTML 문자열의 <table> 을 pandas DataFrame 으로 변환한다."""
     try:
         dfs = pd.read_html(io.StringIO(html), flavor="lxml")
-    except ValueError:
+    except (ValueError, ImportError):
         dfs = pd.read_html(io.StringIO(html), flavor="bs4")
     if not dfs:
         raise ValueError("표를 파싱할 수 없습니다.")
@@ -80,8 +81,8 @@ def html_table_to_dataframe(html: str):
 def _element_text(el: dict) -> str:
     """caption/heading 등에서 표시용 텍스트를 꺼낸다. markdown 우선, text 폴백."""
     content = el.get("content", {})
-    for field in ("markdown", "text", "html"):
-        value = (content.get(field) or "").strip()
+    for key in ("markdown", "text", "html"):
+        value = (content.get(key) or "").strip()
         if value:
             return value
     return ""
@@ -135,7 +136,6 @@ class ExtractedItem:
     page: int
     caption: str | None
     csv_path: Path
-    preview: str  # 첫 몇 행 요약
     n_rows: int
     n_cols: int
 
@@ -145,7 +145,7 @@ class ExtractionResult:
     tables: list[ExtractedItem] = field(default_factory=list)
     charts: list[ExtractedItem] = field(default_factory=list)
     footnotes: list[dict] = field(default_factory=list)
-    boundary_cases: list[dict] = field(default_factory=list)  # chart_misid 들
+    boundary_cases: list[dict] = field(default_factory=list)
 
     def all_items(self) -> list[ExtractedItem]:
         return self.tables + self.charts
@@ -154,10 +154,23 @@ class ExtractionResult:
 # ----- 메인 추출 -----
 
 
+def _save_html_fallback(
+    output_dir: Path,
+    prefix: str,
+    index: int,
+    page: int,
+    slug: str,
+    html: str,
+) -> Path:
+    """파싱 실패 시 raw HTML 을 저장한다."""
+    fname = f"{prefix}{index:02d}_p{page}_{slug}.html"
+    path = output_dir / fname
+    path.write_text(html, encoding="utf-8")
+    return path
+
+
 def extract_all(response: dict, output_dir: Path) -> ExtractionResult:
     """Upstage 응답을 분류·변환하여 output_dir 에 CSV 등을 저장한다."""
-    import pandas as pd
-
     output_dir.mkdir(parents=True, exist_ok=True)
     elements = response.get("elements", [])
     result = ExtractionResult()
@@ -178,7 +191,6 @@ def extract_all(response: dict, output_dir: Path) -> ExtractionResult:
             try:
                 df = html_table_to_dataframe(html)
                 df.to_csv(path, index=False, encoding="utf-8-sig")
-                preview = df.head(3).to_markdown(index=False) if len(df) else "(빈 표)"
                 result.tables.append(
                     ExtractedItem(
                         kind="table",
@@ -186,26 +198,31 @@ def extract_all(response: dict, output_dir: Path) -> ExtractionResult:
                         page=page,
                         caption=caption,
                         csv_path=path,
-                        preview=preview,
                         n_rows=len(df),
                         n_cols=len(df.columns),
                     )
                 )
-                table_idx += 1
             except Exception as e:  # noqa: BLE001
-                # 파싱 실패 시 raw HTML 로 저장
-                (output_dir / fname.replace(".csv", ".html")).write_text(html, encoding="utf-8")
+                fb = _save_html_fallback(output_dir, "t", table_idx, page, slug, html)
+                result.boundary_cases.append(
+                    {
+                        "page": page,
+                        "index": table_idx,
+                        "reason": f"table HTML parse failed: {type(e).__name__}",
+                        "fallback_path": str(fb.relative_to(output_dir)),
+                    }
+                )
+            finally:
+                table_idx += 1
 
         elif kind in ("chart", "chart_misid"):
             caption = find_caption_before(elements, i)
             slug = slugify(caption or f"chart-p{page}")
             fname = f"c{chart_idx:02d}_p{page}_{slug}.csv"
             path = output_dir / fname
-            # chart element 는 <figure> 안에 <table> 이 포함됨. 그걸 꺼냄.
             try:
                 df = html_table_to_dataframe(html)
                 df.to_csv(path, index=False, encoding="utf-8-sig")
-                preview = df.head(3).to_markdown(index=False) if len(df) else "(빈 차트)"
                 result.charts.append(
                     ExtractedItem(
                         kind="chart",
@@ -213,16 +230,17 @@ def extract_all(response: dict, output_dir: Path) -> ExtractionResult:
                         page=page,
                         caption=caption,
                         csv_path=path,
-                        preview=preview,
                         n_rows=len(df),
                         n_cols=len(df.columns),
                     )
                 )
                 if kind == "chart_misid":
-                    result.boundary_cases.append({"page": page, "index": chart_idx, "reason": "chart-like table"})
+                    result.boundary_cases.append(
+                        {"page": page, "index": chart_idx, "reason": "chart-like table"}
+                    )
                 chart_idx += 1
             except Exception:  # noqa: BLE001
-                # 차트인데 데이터 표 안 나온 경우 — 설명만 있는 차트
+                # 차트 안에 데이터 표가 없는 케이스 (설명만 있음) — 조용히 스킵
                 pass
 
         elif kind == "footnote":
@@ -243,7 +261,7 @@ def write_index_md(
     result: ExtractionResult, output_dir: Path, *, source_name: str, total_pages: int
 ) -> None:
     lines = [
-        f"# TableUp 추출 결과",
+        "# TableUp 추출 결과",
         "",
         f"- 원본: `{source_name}`",
         f"- 총 페이지: {total_pages}",
@@ -276,15 +294,18 @@ def write_index_md(
         lines.append("")
 
     if result.boundary_cases:
-        lines.append("## 경계 케이스 (차트로 재분류된 항목)")
+        lines.append("## 경계 케이스")
         lines.append("")
         for case in result.boundary_cases:
-            lines.append(f"- 페이지 {case['page']}, 차트 #{case['index']}: {case['reason']}")
+            reason = case.get("reason", "")
+            fb = case.get("fallback_path")
+            extra = f" → `{fb}`" if fb else ""
+            lines.append(f"- 페이지 {case['page']}, #{case['index']}: {reason}{extra}")
         lines.append("")
 
     lines.append("## 검증용 원본 이미지")
     lines.append("")
-    lines.append("`sources/p<페이지>.png` 로 원본을 확인할 수 있습니다 (생성한 경우).")
+    lines.append("`sources/p<페이지>.png` 로 원본을 확인할 수 있습니다 (PDF 처리 시 생성).")
     lines.append("")
 
     (output_dir / "index.md").write_text("\n".join(lines), encoding="utf-8")

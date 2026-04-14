@@ -4,32 +4,53 @@
 Usage:
     python scripts/run_evals.py              # 전부
     python scripts/run_evals.py --only 1     # 시나리오 1만
+
+환경변수 (옵션):
+    TABLEUP_EVAL_BOK_AI     BoK AI 보고서 PDF 경로 (기본: evals/fixtures/bok_ai_report.pdf)
+    TABLEUP_EVAL_BOK_MAIN   BoK 금융안정보고서 PDF 경로 (기본: evals/fixtures/bok_financial_stability_main.pdf)
+
+fixtures PDF 가 없으면 BoK 공식 URL 에서 자동 다운로드합니다 (main 한정).
+AI 보고서는 공식 URL 가 안정적이지 않으니 사용자가 직접 배치하세요.
 """
 from __future__ import annotations
 
 import argparse
 import datetime
-import io
 import json
+import os
 import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pandas as pd
+
 ROOT = Path(__file__).parent.parent
 FIXTURES = ROOT / "evals" / "fixtures"
 RESULTS = ROOT / "evals" / "results"
 TABLEUP = ROOT / "scripts" / "tableup.py"
 
-# -------- Fixtures --------
+# 기본 fixture 경로 (환경변수로 오버라이드 가능)
+BOK_AI_PDF = Path(
+    os.environ.get("TABLEUP_EVAL_BOK_AI", str(FIXTURES / "bok_ai_report.pdf"))
+).expanduser()
+BOK_MAIN_PDF = Path(
+    os.environ.get(
+        "TABLEUP_EVAL_BOK_MAIN", str(FIXTURES / "bok_financial_stability_main.pdf")
+    )
+).expanduser()
 
-BOK_AI_PDF = Path("/Users/chawj/Downloads/AI의 빠른 확산과 생산성 효과-한국은행.pdf")
-BOK_MAIN_PDF = Path("/tmp/tableup_test2/main.pdf")  # 금융안정보고서 본문
 BOK_MAIN_URL = (
     "https://www.bok.or.kr/fileSrc/portal/"
     "4f1a9e7acede40168fde41d1e555d2f4/5/d9b3fe9fbcec4bee83171092b6da2654.pdf"
 )
+
+# 레거시 개발 경로 (과거 개발 환경에서 사용하던 로컬 경로). fixture 미존재 시 폴백.
+LEGACY_BOK_AI = Path("/Users/chawj/Downloads/AI의 빠른 확산과 생산성 효과-한국은행.pdf")
+LEGACY_BOK_MAIN = Path("/tmp/tableup_test2/main.pdf")
+
+SUBPROCESS_TIMEOUT = 900  # 15분
 
 # -------- 결과 구조 --------
 
@@ -50,7 +71,7 @@ class EvalResult:
 
     @property
     def passed(self) -> bool:
-        return all(c.passed for c in self.checks)
+        return bool(self.checks) and all(c.passed for c in self.checks)
 
     def add(self, name: str, passed: bool, detail: str = "") -> None:
         self.checks.append(Check(name, passed, detail))
@@ -59,28 +80,41 @@ class EvalResult:
 # -------- 공용 헬퍼 --------
 
 
-def ensure_pdf(path: Path, url: str | None = None) -> Path:
-    if path.exists():
-        return path
-    if not url:
-        raise SystemExit(f"PDF 없음: {path}")
-    import urllib.request
+def _resolve_fixture(primary: Path, legacy: Path, url: str | None) -> Path:
+    """fixture 경로 → 레거시 경로 → URL 다운로드 순으로 시도."""
+    if primary.exists():
+        return primary
+    if legacy.exists():
+        return legacy
+    if url:
+        import urllib.request
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"  PDF 다운로드 중: {url}")
-    req = urllib.request.Request(url, headers={"Referer": "https://www.bok.or.kr/"})
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        path.write_bytes(resp.read())
-    return path
+        primary.parent.mkdir(parents=True, exist_ok=True)
+        print(f"  PDF 다운로드 중: {url}")
+        req = urllib.request.Request(url, headers={"Referer": "https://www.bok.or.kr/"})
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            primary.write_bytes(resp.read())
+        return primary
+    raise SystemExit(
+        f"❌ 필요한 fixture 파일이 없습니다: {primary}\n"
+        f"   환경변수로 경로를 지정하거나 위 경로에 파일을 배치하세요."
+    )
 
 
 def run_tableup(pdf: Path, out_dir: Path, extra_args: list[str] | None = None) -> None:
     out_dir.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [sys.executable, str(TABLEUP), str(pdf), "--out", str(out_dir), "--no-source"]
+    cmd = [sys.executable, str(TABLEUP), str(pdf), "--out", str(out_dir), "--no-source", "--force"]
     if extra_args:
         cmd += extra_args
     print(f"  실행: tableup.py --out {out_dir.name}")
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    try:
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            f"❌ tableup.py 가 {SUBPROCESS_TIMEOUT}초 내에 끝나지 않았습니다 (PDF: {pdf.name})."
+        )
     if res.returncode != 0:
         print(res.stdout)
         print(res.stderr, file=sys.stderr)
@@ -95,27 +129,29 @@ def load_raw(out_dir: Path) -> dict:
     return json.loads((out_dir / "_raw_response.json").read_text(encoding="utf-8"))
 
 
+def _within_tolerance(actual: float, expected: float, tol: float = 0.05) -> bool:
+    """상대 오차 비교. expected 0 일 때는 절대 오차로 분기."""
+    if expected == 0:
+        return abs(actual) < 1e-9
+    return abs(actual - expected) / abs(expected) <= tol
+
+
 # -------- Eval 1: 복잡 표 --------
 
 
 def eval_complex_table() -> EvalResult:
     print("\n▶ Eval 1: 복잡 표 추출 (BoK 금융안정보고서 p.6 취약차주 표)")
-    pdf = ensure_pdf(BOK_MAIN_PDF, BOK_MAIN_URL)
+    pdf = _resolve_fixture(BOK_MAIN_PDF, LEGACY_BOK_MAIN, BOK_MAIN_URL)
     out_dir = RESULTS / "e01_complex_table"
-    # 페이지 범위 대신 전체 PDF (캐시 공유하기 위해)
     run_tableup(pdf, out_dir)
 
     result = EvalResult("Eval 1: 복잡 표 추출", "scenario-01-complex-table.md", out_dir)
     meta = load_meta(out_dir)
 
-    # p.6 에 있는 표만 필터
     p6_tables = [f for f in meta["files"] if f["type"] == "table" and f["page"] == 6]
     result.add("p.6 표 추출", len(p6_tables) >= 1, f"p6 tables={len(p6_tables)}")
     if not p6_tables:
         return result
-
-    # 가장 큰 표 선택 (취약차주 다단 헤더 표)
-    import pandas as pd
 
     best = max(p6_tables, key=lambda f: f["rows"] * f["cols"])
     df = pd.read_csv(out_dir / best["path"])
@@ -125,7 +161,6 @@ def eval_complex_table() -> EvalResult:
         f"shape={df.shape}",
     )
 
-    # 골든 값 중 몇 개라도 발견되는지 (정확 매칭은 표 구조에 따라 달라질 수 있으므로 값 단위로 검사)
     flat_values = [str(v) for v in df.values.flatten()]
     flat_joined = " ".join(flat_values)
     goldens = [
@@ -136,13 +171,8 @@ def eval_complex_table() -> EvalResult:
         ("신용등급 중 23년=18.5", "18.5"),
     ]
     hits = sum(1 for _, v in goldens if v in flat_joined)
-    result.add(
-        f"골든 값 {hits}/5 이상 발견",
-        hits >= 4,
-        f"{hits}/5 hit",
-    )
+    result.add(f"골든 값 {hits}/5 이상 발견", hits >= 4, f"{hits}/5 hit")
 
-    # 한글 헤더/셀 존재
     korean_in_cols = any(re.search(r"[가-힣]", str(c)) for c in df.columns)
     korean_in_cells = any(re.search(r"[가-힣]", str(v)) for v in flat_values)
     result.add("한글 헤더/셀 보존", korean_in_cols or korean_in_cells, "")
@@ -154,8 +184,9 @@ def eval_complex_table() -> EvalResult:
 
 def eval_chart_to_data() -> EvalResult:
     print("\n▶ Eval 2: 차트→데이터 (BoK AI 보고서 p.5)")
+    pdf = _resolve_fixture(BOK_AI_PDF, LEGACY_BOK_AI, None)
     out_dir = RESULTS / "e02_chart_to_data"
-    run_tableup(BOK_AI_PDF, out_dir)
+    run_tableup(pdf, out_dir)
 
     result = EvalResult("Eval 2: 차트→데이터", "scenario-02-chart-to-data.md", out_dir)
     meta = load_meta(out_dir)
@@ -163,16 +194,12 @@ def eval_chart_to_data() -> EvalResult:
     charts = [f for f in meta["files"] if f["type"] == "chart"]
     result.add("차트 추출 개수", len(charts) >= 30, f"charts={len(charts)}")
 
-    # p.5 차트들 중 한국 vs 미국 찾기
-    import pandas as pd
-
     p5_charts = [c for c in charts if c["page"] == 5]
     if not p5_charts:
         result.add("p.5 차트 발견", False, "none")
         return result
     result.add("p.5 차트 발견", True, f"{len(p5_charts)}개")
 
-    # 골든: 전체 한국 63.5, 미국 39.6 등
     golden = {
         ("전체", "한국"): 63.5,
         ("전체", "미국"): 39.6,
@@ -182,7 +209,6 @@ def eval_chart_to_data() -> EvalResult:
         ("업무 외", "미국"): 33.7,
     }
 
-    # 한국 vs 미국 차트 찾기 (열 이름 기준)
     best_match = None
     for c in p5_charts:
         df = pd.read_csv(out_dir / c["path"])
@@ -207,7 +233,7 @@ def eval_chart_to_data() -> EvalResult:
             actual_f = float(actual)
         except (TypeError, ValueError):
             continue
-        if abs(actual_f - expected) / expected <= 0.05:
+        if _within_tolerance(actual_f, expected, tol=0.05):
             hits += 1
 
     result.add(f"골든 값 정확도 {hits}/{total}", hits == total, f"{hits}/{total} within ±5%")
@@ -219,7 +245,7 @@ def eval_chart_to_data() -> EvalResult:
 
 def eval_hwp_derived() -> EvalResult:
     print("\n▶ Eval 3: HWP 유래 PDF 전체 처리 (BoK 금융안정보고서 77p)")
-    pdf = ensure_pdf(BOK_MAIN_PDF, BOK_MAIN_URL)
+    pdf = _resolve_fixture(BOK_MAIN_PDF, LEGACY_BOK_MAIN, BOK_MAIN_URL)
     out_dir = RESULTS / "e03_hwp_derived"
     run_tableup(pdf, out_dir)
 
@@ -230,21 +256,19 @@ def eval_hwp_derived() -> EvalResult:
     elements = raw["elements"]
     result.add("element 1000개 이상", len(elements) >= 1000, f"elements={len(elements)}")
 
-    # Upstage 원본 카테고리 집계 (분류 전)
     raw_tables = sum(1 for e in elements if e.get("category") == "table")
     raw_charts = sum(1 for e in elements if e.get("category") == "chart")
     result.add("원본 표 20개 이상", raw_tables >= 20, f"raw tables={raw_tables}")
     result.add("원본 차트 130개 이상", raw_charts >= 130, f"raw charts={raw_charts}")
 
-    # 분류 후 데이터 자산 총량
     meta_total_data = meta["counts"]["tables"] + meta["counts"]["charts"]
     result.add(
         "데이터 자산 150개 이상",
         meta_total_data >= 150,
-        f"tables+charts={meta_total_data} (tables={meta['counts']['tables']}, charts={meta['counts']['charts']})",
+        f"tables+charts={meta_total_data} "
+        f"(tables={meta['counts']['tables']}, charts={meta['counts']['charts']})",
     )
 
-    # 한국어 완전성
     all_md = raw.get("content", {}).get("markdown", "")
     korean_chars = len(re.findall(r"[가-힣]", all_md))
     broken = all_md.count("\ufffd") + all_md.count("�")
@@ -292,7 +316,6 @@ def main() -> int:
     ap.add_argument("--only", type=int, help="특정 시나리오만 실행 (1/2/3)")
     args = ap.parse_args()
 
-    FIXTURES.mkdir(parents=True, exist_ok=True)
     today = datetime.date.today().isoformat()
     report_dir = RESULTS / today
     report_dir.mkdir(parents=True, exist_ok=True)

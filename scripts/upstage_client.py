@@ -1,30 +1,35 @@
 """Upstage Document Parse 클라이언트.
 
 설계 결정 (2026-04 기준):
-- enhanced mode 는 현재 sync 엔드포인트만 안정적 (async+enhanced 는 server error 빈발)
-- sync 엔드포인트는 100페이지 제한 → 이를 초과하면 클라이언트에서 chunk 단위로 나눠 순차 호출
-- async 래퍼(poll/download)는 standard mode 용으로 upstage_async.py 에 별도 보존
+- Async + enhanced/auto 조합에 Upstage 서버 이슈 재현됨 → 본 클라이언트는 sync 만 사용
+- Sync 엔드포인트의 100페이지 제한은 클라이언트에서 chunk 분할 + 2-way 병렬 호출로 극복
+- 기본 모드는 `auto` (페이지별 자동 분류). `enhanced`, `standard` 도 선택 가능.
+
+환경변수 오버라이드:
+- TABLEUP_MAX_WORKERS: 동시 chunk 호출 수 (기본 2, Upstage rate limit 2 RPS 안전 범위)
+- TABLEUP_CHUNK_SIZE: chunk 당 페이지 수 (기본 100, sync 엔드포인트 최대)
 """
 from __future__ import annotations
 
 import json
 import os
+import re
+import secrets
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 API_BASE = "https://api.upstage.ai/v1/document-digitization"
 
-SYNC_MAX_PAGES = 100
+SYNC_MAX_PAGES = int(os.environ.get("TABLEUP_CHUNK_SIZE", "100"))
 MAX_RETRIES = 4
-REQUEST_TIMEOUT = 900  # 최대 15분 (100페이지 enhanced 기준 충분)
-DEFAULT_MAX_WORKERS = 2  # Upstage rate limit 2 RPS 안전 범위
+REQUEST_TIMEOUT = 900  # 최대 15분
+DEFAULT_MAX_WORKERS = int(os.environ.get("TABLEUP_MAX_WORKERS", "2"))
 
 
 class UpstageError(Exception):
@@ -39,6 +44,11 @@ def _require_api_key() -> str:
             "https://console.upstage.ai 에서 발급받으세요."
         )
     return key
+
+
+def _mask_api_key(text: str) -> str:
+    """에러 메시지 등에서 Upstage API 키 형태를 마스킹한다."""
+    return re.sub(r"up_[A-Za-z0-9]{10,}", "up_***REDACTED***", text)
 
 
 _CONTENT_TYPE_BY_EXT = {
@@ -69,7 +79,8 @@ def is_pdf(path: Path) -> bool:
 def _build_multipart(
     fields: dict, filename: str, file_bytes: bytes, content_type: str
 ) -> tuple[bytes, str]:
-    boundary = f"----TableUpBoundary{int(time.time() * 1000)}"
+    # 고유 boundary (병렬 호출 시 ms 해상도 충돌 방지)
+    boundary = f"----TableUpBoundary{secrets.token_hex(16)}"
     parts: list[bytes] = []
     for name, value in fields.items():
         parts.append(f"--{boundary}".encode())
@@ -94,11 +105,17 @@ def _pdf_page_count(pdf_path: Path) -> int:
     return len(pdfium.PdfDocument(str(pdf_path)))
 
 
-def _split_pdf(pdf_path: Path, start: int, end: int, out_path: Path) -> Path:
-    """pypdfium2 로 start..end (1-indexed, 포함) 범위만 추출해 새 PDF 로 저장."""
+def split_pdf_pages(pdf_path: Path, start: int, end: int, out_path: Path) -> Path:
+    """pypdfium2 로 start..end (1-indexed, 포함) 범위만 추출해 새 PDF 로 저장한다.
+
+    tableup.py 의 페이지 범위 추출과 chunk 분할이 공유하는 단일 구현.
+    """
     import pypdfium2 as pdfium
 
     src = pdfium.PdfDocument(str(pdf_path))
+    n_total = len(src)
+    if start < 1 or end > n_total or start > end:
+        raise ValueError(f"페이지 범위 잘못됨 ({start}-{end}, PDF 총 {n_total}페이지)")
     dst = pdfium.PdfDocument.new()
     dst.import_pages(src, list(range(start - 1, end)))
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -109,14 +126,14 @@ def _split_pdf(pdf_path: Path, start: int, end: int, out_path: Path) -> Path:
 def _call_sync(
     file_path: Path,
     *,
-    mode: str = "enhanced",
+    mode: str,
     ocr: str = "auto",
     chart_recognition: bool = True,
     merge_multipage_tables: bool = True,
 ) -> dict:
     """Upstage sync 엔드포인트를 한 번 호출하여 전체 응답을 반환한다.
 
-    PDF 외에 이미지·DOCX·PPTX·XLSX·HWP·HWPX 도 지원한다.
+    PDF, 이미지(JPEG/PNG/BMP/TIFF/HEIC), Office(DOCX/PPTX/XLSX), 한글(HWP/HWPX) 모두 지원.
     """
     api_key = _require_api_key()
     file_bytes = file_path.read_bytes()
@@ -146,7 +163,7 @@ def _call_sync(
             with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
-            msg = e.read().decode("utf-8", errors="replace")
+            msg = _mask_api_key(e.read().decode("utf-8", errors="replace"))
             if e.code == 429 or 500 <= e.code < 600:
                 if attempt < MAX_RETRIES - 1:
                     time.sleep(backoff)
@@ -158,7 +175,7 @@ def _call_sync(
                 time.sleep(backoff)
                 backoff *= 2
                 continue
-            raise UpstageError(f"네트워크 오류: {e}") from e
+            raise UpstageError(f"네트워크 오류: {_mask_api_key(str(e))}") from e
     raise UpstageError("최대 재시도 초과")
 
 
@@ -188,22 +205,24 @@ def _merge_responses(responses: list[dict], page_offsets: list[int]) -> dict:
 def run_pipeline(
     file_path: str | Path,
     *,
-    mode: str = "enhanced",
+    mode: str = "auto",
     on_progress: Callable[[int, int], None] | None = None,
     chunk_cache_dir: Path | None = None,
     chunk_size: int | None = None,
-    max_workers: int = DEFAULT_MAX_WORKERS,
+    max_workers: int | None = None,
+    source_sha: str | None = None,
     **kwargs,
 ) -> dict:
     """문서를 처리하고 병합된 응답을 반환한다.
 
-    - PDF 100페이지 이하 또는 비-PDF: sync 엔드포인트 단일 호출
-    - PDF 100페이지 초과: chunk_size 단위로 자동 분할, **max_workers 개 병렬** 호출, 순서대로 병합
-    - 분할한 chunk PDF 는 호출 성공 후 자동 정리
-    - 병렬은 Upstage rate limit 2 RPS 안전 범위(max_workers=2)
+    - 비-PDF 또는 chunk_size 이하 PDF: sync 엔드포인트 단일 호출
+    - chunk_size 초과 PDF: 분할 후 max_workers 개 동시 호출, 결과는 페이지 순서대로 병합
+    - 분할한 chunk PDF 는 성공·실패 모두에서 자동 정리 (finally)
+    - source_sha: 제공 시 chunk 파일명에 prefix 로 포함하여 동명 PDF 충돌 방지
     """
     file_path = Path(file_path)
     chunk_size = chunk_size or SYNC_MAX_PAGES
+    max_workers = max_workers or DEFAULT_MAX_WORKERS
 
     if not is_pdf(file_path):
         if on_progress:
@@ -223,23 +242,22 @@ def run_pipeline(
             on_progress(n_pages, n_pages)
         return resp
 
-    # chunk 분할 (로컬, 빠름)
+    # chunk 분할
     chunk_cache_dir = chunk_cache_dir or (Path.home() / ".cache" / "tableup" / "chunks")
     chunk_cache_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f"{source_sha[:8]}_" if source_sha else ""
 
-    chunk_specs: list[tuple[int, int, Path]] = []  # (start_page, end_page, chunk_path)
+    chunk_specs: list[tuple[int, int, Path]] = []
     for start in range(1, n_pages + 1, chunk_size):
         end = min(start + chunk_size - 1, n_pages)
-        chunk_path = chunk_cache_dir / f"{file_path.stem}_p{start}-{end}.pdf"
-        _split_pdf(file_path, start, end, chunk_path)
+        chunk_path = chunk_cache_dir / f"{prefix}{file_path.stem}_p{start}-{end}.pdf"
+        split_pdf_pages(file_path, start, end, chunk_path)
         chunk_specs.append((start, end, chunk_path))
 
     created_chunks = [p for _, _, p in chunk_specs]
 
-    # 병렬 API 호출
     progress_lock = threading.Lock()
     pages_done = {"n": 0}
-
     if on_progress:
         on_progress(0, n_pages)
 
@@ -250,49 +268,49 @@ def run_pipeline(
             pages_done["n"] += end - start + 1
             if on_progress:
                 on_progress(pages_done["n"], n_pages)
-        return start - 1, resp  # offset, resp
+        return start - 1, resp
 
-    # max_workers 개 동시 실행. 첫 번째 실패 시 다른 작업도 가능한 한 종료.
     results_by_offset: dict[int, dict] = {}
-    failure: Exception | None = None
+    try:
+        with ThreadPoolExecutor(
+            max_workers=max(1, min(max_workers, len(chunk_specs)))
+        ) as ex:
+            futures = {ex.submit(_process, spec): spec for spec in chunk_specs}
+            first_error: Exception | None = None
+            for fut in as_completed(futures):
+                try:
+                    offset, resp = fut.result()
+                    results_by_offset[offset] = resp
+                except Exception as e:
+                    if first_error is None:
+                        first_error = e
+                    # 나머지 대기 중 작업은 취소 시도 (실행 중 작업은 불가피하게 진행됨)
+                    for other in futures:
+                        if not other.done():
+                            other.cancel()
+            if first_error is not None:
+                raise first_error
 
-    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(chunk_specs)))) as ex:
-        futures = {ex.submit(_process, spec): spec for spec in chunk_specs}
-        for fut in as_completed(futures):
-            try:
-                offset, resp = fut.result()
-                results_by_offset[offset] = resp
-            except Exception as e:
-                failure = e
-                for other in futures:
-                    other.cancel()
-                break
+        if len(results_by_offset) != len(chunk_specs):
+            raise UpstageError(
+                f"chunk 결과 누락: {len(results_by_offset)}/{len(chunk_specs)}"
+            )
 
-    if failure is not None:
-        # 실패 시에도 이미 만든 chunk 는 정리 (디스크 누수 방지)
+        responses = [results_by_offset[o] for o in sorted(results_by_offset)]
+        offsets = sorted(results_by_offset)
+        return _merge_responses(responses, offsets)
+    finally:
+        # 성공·실패 모두에서 chunk 임시 PDF cleanup
         for p in created_chunks:
             try:
                 p.unlink(missing_ok=True)
             except OSError:
                 pass
-        raise failure
-
-    # 원본 순서대로 정렬
-    responses = [results_by_offset[o] for o in sorted(results_by_offset)]
-    offsets = sorted(results_by_offset)
-
-    for p in created_chunks:
-        try:
-            p.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    return _merge_responses(responses, offsets)
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python upstage_client.py <pdf_path>", file=sys.stderr)
+        print("Usage: python upstage_client.py <file_path>", file=sys.stderr)
         sys.exit(1)
 
     def _progress(done: int, total: int) -> None:
