@@ -10,9 +10,11 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -22,6 +24,7 @@ API_BASE = "https://api.upstage.ai/v1/document-digitization"
 SYNC_MAX_PAGES = 100
 MAX_RETRIES = 4
 REQUEST_TIMEOUT = 900  # 최대 15분 (100페이지 enhanced 기준 충분)
+DEFAULT_MAX_WORKERS = 2  # Upstage rate limit 2 RPS 안전 범위
 
 
 class UpstageError(Exception):
@@ -188,18 +191,21 @@ def run_pipeline(
     mode: str = "enhanced",
     on_progress: Callable[[int, int], None] | None = None,
     chunk_cache_dir: Path | None = None,
+    chunk_size: int | None = None,
+    max_workers: int = DEFAULT_MAX_WORKERS,
     **kwargs,
 ) -> dict:
     """문서를 처리하고 병합된 응답을 반환한다.
 
     - PDF 100페이지 이하 또는 비-PDF: sync 엔드포인트 단일 호출
-    - PDF 100페이지 초과: SYNC_MAX_PAGES 단위로 자동 분할·순차 호출·병합
-    - 분할한 chunk PDF 는 호출 성공 후 자동 정리된다
+    - PDF 100페이지 초과: chunk_size 단위로 자동 분할, **max_workers 개 병렬** 호출, 순서대로 병합
+    - 분할한 chunk PDF 는 호출 성공 후 자동 정리
+    - 병렬은 Upstage rate limit 2 RPS 안전 범위(max_workers=2)
     """
     file_path = Path(file_path)
+    chunk_size = chunk_size or SYNC_MAX_PAGES
 
     if not is_pdf(file_path):
-        # 비-PDF 는 페이지 개념 없음 → 단일 호출
         if on_progress:
             on_progress(0, 1)
         resp = _call_sync(file_path, mode=mode, **kwargs)
@@ -209,7 +215,7 @@ def run_pipeline(
 
     n_pages = _pdf_page_count(file_path)
 
-    if n_pages <= SYNC_MAX_PAGES:
+    if n_pages <= chunk_size:
         if on_progress:
             on_progress(0, n_pages)
         resp = _call_sync(file_path, mode=mode, **kwargs)
@@ -217,29 +223,64 @@ def run_pipeline(
             on_progress(n_pages, n_pages)
         return resp
 
-    # chunk 모드
+    # chunk 분할 (로컬, 빠름)
     chunk_cache_dir = chunk_cache_dir or (Path.home() / ".cache" / "tableup" / "chunks")
     chunk_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    responses: list[dict] = []
-    offsets: list[int] = []
-    pages_done = 0
-    created_chunks: list[Path] = []
-    for start in range(1, n_pages + 1, SYNC_MAX_PAGES):
-        end = min(start + SYNC_MAX_PAGES - 1, n_pages)
+    chunk_specs: list[tuple[int, int, Path]] = []  # (start_page, end_page, chunk_path)
+    for start in range(1, n_pages + 1, chunk_size):
+        end = min(start + chunk_size - 1, n_pages)
         chunk_path = chunk_cache_dir / f"{file_path.stem}_p{start}-{end}.pdf"
         _split_pdf(file_path, start, end, chunk_path)
-        created_chunks.append(chunk_path)
-        if on_progress:
-            on_progress(pages_done, n_pages)
-        resp = _call_sync(chunk_path, mode=mode, **kwargs)
-        responses.append(resp)
-        offsets.append(start - 1)
-        pages_done = end
-        if on_progress:
-            on_progress(pages_done, n_pages)
+        chunk_specs.append((start, end, chunk_path))
 
-    # 성공적으로 모든 chunk 를 처리했을 때만 임시 PDF 삭제
+    created_chunks = [p for _, _, p in chunk_specs]
+
+    # 병렬 API 호출
+    progress_lock = threading.Lock()
+    pages_done = {"n": 0}
+
+    if on_progress:
+        on_progress(0, n_pages)
+
+    def _process(spec: tuple[int, int, Path]) -> tuple[int, dict]:
+        start, end, path = spec
+        resp = _call_sync(path, mode=mode, **kwargs)
+        with progress_lock:
+            pages_done["n"] += end - start + 1
+            if on_progress:
+                on_progress(pages_done["n"], n_pages)
+        return start - 1, resp  # offset, resp
+
+    # max_workers 개 동시 실행. 첫 번째 실패 시 다른 작업도 가능한 한 종료.
+    results_by_offset: dict[int, dict] = {}
+    failure: Exception | None = None
+
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(chunk_specs)))) as ex:
+        futures = {ex.submit(_process, spec): spec for spec in chunk_specs}
+        for fut in as_completed(futures):
+            try:
+                offset, resp = fut.result()
+                results_by_offset[offset] = resp
+            except Exception as e:
+                failure = e
+                for other in futures:
+                    other.cancel()
+                break
+
+    if failure is not None:
+        # 실패 시에도 이미 만든 chunk 는 정리 (디스크 누수 방지)
+        for p in created_chunks:
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise failure
+
+    # 원본 순서대로 정렬
+    responses = [results_by_offset[o] for o in sorted(results_by_offset)]
+    offsets = sorted(results_by_offset)
+
     for p in created_chunks:
         try:
             p.unlink(missing_ok=True)
