@@ -35,6 +35,7 @@ Upstage Document Parse가 수용하는 전 포맷:
    python scripts/tableup.py --search "<키워드>"
    ```
    주요 옵션:
+   - `--mode {auto,enhanced,standard}`: 처리 모드 (기본 `auto` — 페이지별 자동 분류로 비용 절감)
    - `--search <키워드>`: CWD/Downloads/Desktop/Documents 에서 부분 파일명 매칭
    - `--pages N-M`: PDF만 해당, 특정 페이지 범위
    - `--out <dir>`: 출력 디렉토리 (기본: `.tableup/<파일명_stem>/`)
@@ -102,7 +103,7 @@ mdfind -name "금융안정" | grep -iE '\.(pdf|hwp|hwpx|docx)$'
 
 - **100페이지 초과 PDF 자동 chunk 분할**: 100페이지 단위로 잘라 순차 호출, 결과 자동 병합. 사용자에게 총 처리 시간 안내 권장 (페이지당 2~5초).
 
-- **Enhanced mode 고정**: 품질 우선. standard 대비 비용 높지만 재확인 불필요 — 설계 결정.
+- **기본 모드는 `auto` (하이브리드)**: Upstage 가 페이지별로 standard/enhanced 를 자동 선택 → 30~60% 비용 절감. 품질 Eval 3/3 PASS 유지. 모든 페이지를 고품질로 강제하려면 `--mode enhanced`.
 
 - **비-PDF 파일은 chunk·page-range·원본 PNG 미지원**: DOCX·HWP·이미지 등은 전체를 한 번에 처리. `--pages`·`--no-source` 는 PDF에만 의미가 있음.
 

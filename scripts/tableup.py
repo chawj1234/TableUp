@@ -8,6 +8,7 @@ Usage:
     python scripts/tableup.py --search "<키워드>"
 
 옵션:
+    --mode {auto,enhanced,standard}  Upstage 처리 모드 (기본: auto, 페이지별 자동 분류)
     --pages N-M         PDF 특정 페이지 범위 (비-PDF 에선 무시)
     --no-source         원본 페이지 PNG 생성 생략 (PDF 만 해당)
     --excel             .xlsx 파일도 함께 생성
@@ -110,20 +111,26 @@ def render_source_pages(
         pil.save(sources_dir / f"p{pno}.png")
 
 
-def get_cache_path(sha256: str) -> Path:
-    return CACHE_DIR / f"{sha256[:16]}.json"
+def get_cache_path(sha256: str, mode: str) -> Path:
+    # 모드별로 별도 캐시 (mode 바꾸면 재호출). 기존 mode 없는 캐시는 enhanced 로 간주.
+    return CACHE_DIR / f"{sha256[:16]}_{mode}.json"
 
 
-def load_cached_response(sha256: str) -> dict | None:
-    p = get_cache_path(sha256)
+def load_cached_response(sha256: str, mode: str) -> dict | None:
+    p = get_cache_path(sha256, mode)
     if p.exists():
         return json.loads(p.read_text(encoding="utf-8"))
+    # 레거시 캐시 (mode 없음) 는 enhanced 요청에만 재사용
+    if mode == "enhanced":
+        legacy = CACHE_DIR / f"{sha256[:16]}.json"
+        if legacy.exists():
+            return json.loads(legacy.read_text(encoding="utf-8"))
     return None
 
 
-def save_cached_response(sha256: str, response: dict) -> None:
+def save_cached_response(sha256: str, mode: str, response: dict) -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    get_cache_path(sha256).write_text(
+    get_cache_path(sha256, mode).write_text(
         json.dumps(response, ensure_ascii=False), encoding="utf-8"
     )
 
@@ -251,6 +258,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="TableUp — 문서 표·차트 추출")
     ap.add_argument("file", nargs="?", help="처리할 파일 경로 (--search 사용 시 생략 가능)")
     ap.add_argument("--search", help="부분 파일명으로 검색 (CWD/Downloads/Desktop/Documents)")
+    ap.add_argument(
+        "--mode",
+        choices=["auto", "enhanced", "standard"],
+        default="auto",
+        help="Upstage 처리 모드 (기본: auto — 페이지별 자동 분류로 비용 절감, enhanced — 모든 페이지 고품질)",
+    )
     ap.add_argument("--pages", help="PDF 페이지 범위 (예: 12-15 또는 12). 비-PDF 에선 무시.", default=None)
     ap.add_argument("--no-source", action="store_true", help="원본 페이지 PNG 생성 생략 (PDF 만 해당)")
     ap.add_argument("--excel", action="store_true", help="xlsx 파일도 생성")
@@ -306,24 +319,24 @@ def main() -> int:
     else:
         upload_path = src_path
 
-    # 캐시 확인 (sha256 기준)
+    # 캐시 확인 (sha256 + mode 기준)
     sha = sha256_file(upload_path)
     response = None
     if not args.force:
-        response = load_cached_response(sha)
+        response = load_cached_response(sha, args.mode)
         if response:
-            print("⚡ 캐시에서 복원 (API 호출 생략)", file=sys.stderr)
+            print(f"⚡ 캐시에서 복원 (mode={args.mode}, API 호출 생략)", file=sys.stderr)
 
     # API 호출
     if response is None:
-        print("🚀 Upstage Document Parse (enhanced) 호출 중...", file=sys.stderr)
+        print(f"🚀 Upstage Document Parse (mode={args.mode}) 호출 중...", file=sys.stderr)
         try:
-            response = run_pipeline(upload_path, on_progress=on_progress)
+            response = run_pipeline(upload_path, mode=args.mode, on_progress=on_progress)
         except UpstageError as e:
             print(f"\n❌ {e}", file=sys.stderr)
             return 2
         print("", file=sys.stderr)  # 진행바 개행
-        save_cached_response(sha, response)
+        save_cached_response(sha, args.mode, response)
 
     # 출력 디렉토리 결정 — 기본은 .tableup/<stem>/ (겹침 방지)
     if args.out:

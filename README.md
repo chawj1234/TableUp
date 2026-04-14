@@ -109,6 +109,10 @@ python scripts/tableup.py <file> [옵션]
 # 또는
 python scripts/tableup.py --search <키워드> [옵션]
 
+--mode MODE        auto | enhanced | standard (기본: auto)
+                   auto: 페이지별 자동 분류 (권장, 비용 절감)
+                   enhanced: 모든 페이지 고품질 처리
+                   standard: 모든 페이지 텍스트 위주 (비용 최저)
 --search <키워드>  부분 파일명 검색 (CWD/Downloads/Desktop/Documents)
                    한국어 NFC/NFD 자동 정규화 지원
 --pages N-M        PDF 특정 페이지 범위 (비-PDF 에선 무시)
@@ -136,5 +140,5 @@ python scripts/tableup.py --search <키워드> [옵션]
 
 - **파일 크기**: 최대 50MB
 - **페이지 수**: 100페이지 초과 시 자동 chunk 분할로 순차 처리 (사실상 무제한)
-- **API 비용**: Enhanced mode 페이지당 약 $0.03, 신규 가입 시 $10 무료 크레딧
+- **API 비용**: standard $0.01/p · enhanced $0.03/p. 기본 `auto` 모드가 페이지별 자동 선택으로 **30~60% 절감** (신규 가입 $10 무료 크레딧)
 - **Rate limit**: 2 RPS, 1,200 PPM (여러 파일 동시 처리 금지)
