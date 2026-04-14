@@ -99,7 +99,7 @@ mdfind -name "금융안정" | grep -iE '\.(pdf|hwp|hwpx|docx)$'
 
 ## Gotchas
 
-- **Enhanced mode는 sync 엔드포인트 전용 (2026-04 기준)**: async+enhanced 조합에 Upstage 서버 이슈 확인. 본 Skill 은 sync 만 사용.
+- **Async + enhanced 조합 현재 미지원 (2026-04 기준)**: Upstage async 엔드포인트에서 enhanced/auto 가 internal server error 를 반환하는 서버 측 이슈 확인됨. 본 Skill 은 sync 만 사용하며, sync 의 100페이지 제한은 클라이언트 chunk 분할로 극복.
 
 - **100페이지 초과 PDF 자동 chunk 분할 + 병렬 호출**: 100페이지 단위로 잘라 2-way 병렬로 API 호출, 결과 자동 병합 (Upstage rate limit 안전 범위). 실측 기준 순차 대비 **약 2.6배 빠름**. 페이지당 2~5초.
 
