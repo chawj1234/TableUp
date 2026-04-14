@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# TableUp outputs — 개인 실행 결과는 커밋하지 않음
+.tableup/
+evals/results/
+evals/fixtures/*.pdf
+
+# 로컬 개발용 캐시·임시
+.cache/
+*.log
+
+# API 키·민감 설정
+.env
+.envrc
+
+# 운영체제별 임시
+*.bak
+*.tmp
