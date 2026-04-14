@@ -351,7 +351,11 @@ def _is_dir_empty(path: Path) -> bool:
 
 
 def _prepare_output_dir(output_dir: Path, *, is_default_path: bool, force: bool) -> None:
-    """출력 디렉토리 안전하게 준비. 사용자 데이터 덮어쓰기 방지."""
+    """출력 디렉토리 안전하게 준비. 사용자 데이터 덮어쓰기 방지.
+
+    기본 경로(.tableup/<stem>/) 라도 마커 없이 사용자 데이터가 들어있을 수 있으므로
+    동일하게 TableUp 출력 흔적·빈 디렉터리 여부를 확인한다. --force 는 모든 게이트를 뚫는다.
+    """
     if not output_dir.exists():
         output_dir.mkdir(parents=True)
         return
@@ -359,20 +363,19 @@ def _prepare_output_dir(output_dir: Path, *, is_default_path: bool, force: bool)
     if not output_dir.is_dir():
         raise SystemExit(f"❌ --out 경로가 디렉토리가 아닙니다: {output_dir}")
 
-    # 기본 경로(.tableup/<stem>/) 또는 이전 TableUp 출력이면 안전히 덮어쓰기
-    if is_default_path or _looks_like_tableup_output(output_dir) or _is_dir_empty(output_dir):
+    safe_to_overwrite = (
+        _looks_like_tableup_output(output_dir) or _is_dir_empty(output_dir)
+    )
+    if safe_to_overwrite or force:
         shutil.rmtree(output_dir)
         output_dir.mkdir(parents=True)
         return
 
-    # 그 외: TableUp 흔적 없고 비어있지도 않음 → 사용자 데이터 가능성
-    if not force:
-        raise SystemExit(
-            f"❌ {output_dir} 는 비어있지 않고 TableUp 출력이 아닙니다.\n"
-            f"   덮어쓰려면 --force 를 추가하거나 다른 --out 경로를 사용하세요."
-        )
-    shutil.rmtree(output_dir)
-    output_dir.mkdir(parents=True)
+    hint = " (기본 경로)" if is_default_path else ""
+    raise SystemExit(
+        f"❌ {output_dir}{hint} 는 비어있지 않고 TableUp 출력이 아닙니다.\n"
+        f"   덮어쓰려면 --force 를 추가하거나 다른 --out 경로를 사용하세요."
+    )
 
 
 # ----- 오케스트레이션 (main 을 작은 단계로 분리) -----

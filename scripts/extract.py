@@ -2,7 +2,8 @@
 
 핵심 역할:
 1. element 분류: real_table / chart / chart_misid / footnote / other
-2. HTML 표 → pandas DataFrame (rowspan/colspan 유지)
+2. HTML 표 → pandas DataFrame (rowspan/colspan 은 pandas read_html 기본 동작에 위임 —
+   병합 셀은 NaN·값 복제로 펼쳐지므로 원본 merge 구조는 보존되지 않음)
 3. 의미 기반 파일명 생성 (캡션 슬러그화)
 4. .tableup/ 출력 일체
 
@@ -98,9 +99,15 @@ def _clean_caption(raw: str) -> str:
 
 
 def find_caption_before(elements: list[dict], index: int) -> str | None:
-    """주어진 index 이전 10개 element 중 가장 가까운 caption 을 찾는다."""
+    """주어진 index 이전 10개 element 중 같은 페이지 안의 가장 가까운 caption 을 찾는다.
+
+    페이지 경계를 넘어 이전 페이지의 caption 이 현재 표/차트에 잘못 붙는 오매칭을 방지한다.
+    """
+    target_page = elements[index].get("page")
     for j in range(index - 1, max(-1, index - 10), -1):
         cand = elements[j]
+        if target_page is not None and cand.get("page") != target_page:
+            break
         cat = cand.get("category")
         if cat == "caption":
             raw = _element_text(cand)
@@ -239,9 +246,19 @@ def extract_all(response: dict, output_dir: Path) -> ExtractionResult:
                         {"page": page, "index": chart_idx, "reason": "chart-like table"}
                     )
                 chart_idx += 1
-            except Exception:  # noqa: BLE001
-                # 차트 안에 데이터 표가 없는 케이스 (설명만 있음) — 조용히 스킵
-                pass
+            except Exception as e:  # noqa: BLE001
+                # 차트 안에 데이터 표가 없는 케이스 (설명만 있음 / HTML 파싱 실패)
+                # 조용히 스킵하면 사용자가 누락을 인지 못 하므로 boundary_cases 에 남긴다.
+                fb = _save_html_fallback(output_dir, "c", chart_idx, page, slug, html)
+                result.boundary_cases.append(
+                    {
+                        "page": page,
+                        "index": chart_idx,
+                        "reason": f"chart parse failed: {type(e).__name__}: {str(e)[:120]}",
+                        "fallback_path": str(fb.relative_to(output_dir)),
+                    }
+                )
+                chart_idx += 1
 
         elif kind == "footnote":
             result.footnotes.append(
