@@ -2,18 +2,19 @@
 
 ## 목적
 
-Tabula·Camelot 같은 기존 PDF 도구가 **완전히 실패**하고 Claude vision도 숫자를 **환각**하는 영역인 "차트를 데이터로 변환" 기능이 Upstage Enhanced mode 연동으로 정확히 작동하는지 검증한다.
+Tabula·Camelot 같은 기존 PDF 도구가 **완전히 실패**하고 Claude vision 도 숫자를 **환각**하는 영역인 "차트를 데이터로 변환" 기능이 Upstage Document Parse 연동으로 정확히 작동하는지 검증한다.
 
 ## 입력
 
-- **파일**: 한국은행 "AI의 빠른 확산과 생산성 효과" (25 페이지)
-- **경로**: `/Users/chawj/Downloads/AI의 빠른 확산과 생산성 효과-한국은행.pdf`
-- **옵션**: `--pages 5`
+- **파일**: 한국은행 "AI 의 빠른 확산과 생산성 효과" 이슈노트 — `evals/fixtures/bok_ai_report.pdf`
+- **URL**: https://www.bok.or.kr/fileSrc/portal/4328064bf5fa45ac8b118692ba3c4644/1/dc9d59003d50427d8735ee8830d4b853.pdf
+- **처리 범위**: 전체 페이지 (p.5 한국 vs 미국 차트를 meta 에서 필터링하여 검증)
+- **옵션**: `--no-source --force` (run_evals.py 고정값)
 
 ## 예상 출력
 
-### Chart 정보
-- **chart_type**: `bar chart`
+### Chart 정보 (p.5)
+- **차트 유형**: 막대 그래프
 - **caption**: 한국 vs 미국의 AI 사용률 비교
 
 ### 데이터 (golden)
@@ -24,16 +25,16 @@ Tabula·Camelot 같은 기존 PDF 도구가 **완전히 실패**하고 Claude vi
 | 업무 내 | 51.8 | 26.5 |
 | 업무 외 | 60.1 | 33.7 |
 
-## Pass 기준
+## Pass 기준 (run_evals.py `eval_chart_to_data` 에 해당)
 
 | 기준 | 임계값 |
 |---|---|
-| 차트 타입 식별 | `bar chart` 또는 동의어 |
-| 카테고리 추출 | 3개 전부 (`전체`, `업무 내`, `업무 외`) |
-| 시리즈 추출 | 2개 전부 (`한국`, `미국`) |
-| 숫자 정확도 | 6개 값 전부 오차 ±5% 이내 |
-| 출력 파일 | `.tableup/c*_p5_*.csv` 생성 (차트 prefix `c`) |
-| 메타 데이터 | `meta.json` 에 `chart_type` 필드 존재 |
+| 차트 추출 개수 | `meta.files` 중 `type=chart` 가 **30개 이상** |
+| p.5 차트 발견 | 위 차트 중 `page=5` 인 것 ≥1 |
+| 한국 vs 미국 차트 매칭 | `columns` 에 `한국` 과 `미국` 동시 포함 |
+| 골든 값 정확도 | 6개 셀 전부 상대오차 ±5% 이내 |
+
+※ 현재 `meta.json` 에 `chart_type` 필드는 저장하지 않는다. 차트 판별은 파일 prefix (`c*.csv`) 와 `meta.files[i].type == "chart"` 로 수행한다.
 
 ## Baseline (대조군)
 
@@ -42,40 +43,15 @@ Tabula·Camelot 같은 기존 PDF 도구가 **완전히 실패**하고 Claude vi
 | Tabula-py | 0% (차트 인식 불가) |
 | Camelot | 0% |
 | Claude vision (native) | 차트 타입은 OK, 숫자는 ±10% 환각 발생 |
-| **TableUp** | **≥95% 정확도 목표** |
+| **TableUp** | **≥95% 정확도 목표** (실측 100%) |
 
-## 측정 스크립트
+## 측정 (실제 실행 지점)
 
-```python
-# evals/check_scenario_02.py
-import json
-import pandas as pd
+`scripts/run_evals.py::eval_chart_to_data` 가 `meta.json` 과 `c*.csv` 를 열어 위 기준을 확인한다. `_within_tolerance(actual, expected, tol=0.05)` 로 상대오차 비교.
 
-GOLDEN = {
-    ("전체", "한국"): 63.5,
-    ("전체", "미국"): 39.6,
-    ("업무 내", "한국"): 51.8,
-    ("업무 내", "미국"): 26.5,
-    ("업무 외", "한국"): 60.1,
-    ("업무 외", "미국"): 33.7,
-}
+## Gotchas (운용상 유의)
 
-def check():
-    meta = json.load(open(".tableup/meta.json"))
-    chart_files = [f for f in meta["files"] if f["type"] == "chart" and f["page"] == 5]
-    assert any("bar" in c.get("chart_type", "").lower() for c in chart_files)
-
-    df = pd.read_csv(chart_files[0]["path"])
-    errors = []
-    for (cat, series), expected in GOLDEN.items():
-        actual = df.loc[df.iloc[:, 0] == cat, series].iloc[0]
-        if abs(actual - expected) / expected > 0.05:
-            errors.append((cat, series, expected, actual))
-    return len(errors) == 0, errors
-```
-
-## Gotchas (실패 시 반영)
-
-- 차트 설명 텍스트와 추출 데이터가 **불일치**할 때는 추출 데이터를 우선하되 경고 로그 남김
-- 한국어 범례(`전체`/`업무 내`/`업무 외`) 순서가 원본과 다를 수 있음 — 정렬 비교 사용
-- 단위 행(`(%)`)이 헤더로 잘못 들어올 수 있음 → skipping rule
+- **차트 파싱 실패는 이제 조용히 누락되지 않는다**: `meta.json` 의 `boundary_cases` 에 `reason: "chart parse failed: ..."` 와 `fallback_path` 로 HTML 원본이 남는다. 차트 개수가 기대보다 적으면 `boundary_cases` 를 먼저 확인.
+- 한국어 범례(`전체`/`업무 내`/`업무 외`) 순서가 원본과 다를 수 있음 — 정렬 비교 사용.
+- 단위 행(`(%)`) 이 헤더로 잘못 들어올 수 있음 → 골든 비교 시 첫 번째 컬럼을 기준값으로 삼음.
+- 캡션 매칭은 **같은 페이지의 이전 element** 에서만 수행되므로 앞 페이지 heading 이 끼어드는 현상은 방지됨.

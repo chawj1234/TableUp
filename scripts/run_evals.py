@@ -273,6 +273,20 @@ def eval_hwp_derived() -> EvalResult:
     broken = all_md.count("\ufffd") + all_md.count("�")
     result.add("한글 10,000자 이상", korean_chars >= 10000, f"korean={korean_chars}")
     result.add("깨진 문자 0개", broken == 0, f"broken={broken}")
+
+    # 회귀 방지: chart 파싱 실패가 있어도 meta 에 흔적이 남아야 한다
+    # (과거 except Exception: pass 로 조용히 누락되던 케이스)
+    raw_charts = sum(1 for e in raw["elements"] if e.get("category") == "chart")
+    extracted_charts = meta["counts"]["charts"]
+    dropped = raw_charts - extracted_charts
+    boundary_chart_failures = [
+        c for c in meta.get("boundary_cases", []) if "chart parse failed" in c.get("reason", "")
+    ]
+    result.add(
+        "chart 파싱 실패 silent skip 없음",
+        dropped <= len(boundary_chart_failures),
+        f"dropped={dropped}, recorded={len(boundary_chart_failures)}",
+    )
     return result
 
 
