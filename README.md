@@ -35,8 +35,12 @@ Claude Code 프롬프트에서 **아래 두 줄**만 실행하면 끝:
 
 ```bash
 pip install pypdfium2 pandas lxml beautifulsoup4 openpyxl
-export UPSTAGE_API_KEY=YOUR_API_KEY   # https://console.upstage.ai 에서 발급
+
+# API 키는 프로젝트 디렉터리(Claude Code 를 실행하는 위치)의 .env 에 저장
+echo 'UPSTAGE_API_KEY=YOUR_API_KEY' >> .env   # https://console.upstage.ai 에서 발급
 ```
+
+> `.env` 파일은 CWD 및 상위 디렉터리에서 자동 탐색됩니다. 쉘 전역 `export` 도 지원하지만, 프로젝트별 격리·실수 커밋 방지를 위해 `.env` 를 권장합니다 (`.gitignore` 에 `.env` 추가 필수).
 
 Claude Code 를 재시작하면 스킬이 자동 인식되고, **"표 뽑아줘"** 같은 자연어로 트리거됩니다.
 
