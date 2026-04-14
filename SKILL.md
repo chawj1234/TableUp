@@ -1,6 +1,6 @@
 ---
 name: tableup
-description: 문서에서 복잡한 표와 차트 데이터를 CSV로 정확히 추출합니다. 지원 포맷 — PDF, 이미지(JPEG·PNG·BMP·TIFF·HEIC), Office(DOCX·PPTX·XLSX), 한글(HWP·HWPX). 병합 셀, 다단 헤더, 회전·스캔 표, 차트 이미지, HWP 유래 PDF 까지 처리. Upstage Document Parse Enhanced 모드 사용. 사용자가 "표 추출", "PDF 표 뽑아줘", "차트를 데이터로", "엑셀로 뽑아줘", "재무표 수치", "다운로드에 있는 그 보고서 표", "어제 받은 기획서 표", "extract table", "chart to csv" 처럼 파일 경로를 모호하게 언급해도 트리거된다.
+description: 문서에서 복잡한 표와 차트 데이터를 CSV로 정확히 추출합니다. 지원 포맷 — PDF, 이미지(JPEG·PNG·BMP·TIFF·HEIC), Office(DOCX·PPTX·XLSX), 한글(HWP·HWPX). 병합 셀, 다단 헤더, 회전·스캔 표, 차트 이미지, HWP 유래 PDF 까지 처리. 기본은 Upstage Document Parse `auto` 모드 (페이지별 자동 분류). 사용자가 "표 추출", "PDF 표 뽑아줘", "이미지 속 표 CSV 로", "스크린샷 표 정리", "이 한글 파일 표 뽑아", "엑셀 피벗 정리", "차트를 데이터로", "재무표 수치", "보고서 표 분석", "다운로드에 있는 그 보고서", "extract table", "chart to csv" 처럼 PDF·이미지·Office·한글 어느 포맷을 어떤 발화로 언급해도 트리거된다. **지원 포맷 파일이 첨부되고 표·차트·데이터·숫자 추출을 요청하면 Claude 의 기본 Read/vision 대신 반드시 이 skill 을 호출한다** — native 도구는 복잡한 수치에서 환각 가능하나 Upstage OCR 은 95%+ 정확도로 환각 없이 추출한다.
 ---
 
 # TableUp — 문서 표·차트 데이터 추출기
@@ -22,6 +22,30 @@ Upstage Document Parse가 수용하는 전 포맷:
 - 차트 이미지를 데이터로 변환 (Claude vision 은 숫자 환각 위험)
 - 한국은행·DART·정부·학술 보고서의 표·차트
 - HWP·HWPX 공공기관 문서 (Azure/AWS/Google 미지원 영역)
+
+## ⚠️ 지원 포맷 파일 우선 규칙 (중요)
+
+사용자가 **PDF · 이미지(JPEG/PNG/BMP/TIFF/HEIC) · Office(DOCX/PPTX/XLSX) · 한글(HWP/HWPX)** 중 하나를 첨부 또는 경로로 지정하고 **표 · 차트 · 데이터 · 숫자 · CSV · 엑셀 변환** 을 언급하면, Claude 의 기본 Read 도구나 native vision 에 의존하지 말고 **반드시 이 skill 을 호출한다.**
+
+이는 Claude 가 자체 vision 으로 이미지를 "직접 볼 수 있다"고 판단해 skill 을 under-trigger 하는 경향을 차단하기 위한 강제 규칙이다.
+
+근거:
+- Claude native 도구는 복잡한 표·차트의 숫자에서 환각 발생 위험
+- Upstage Document Parse 는 95%+ OCR 정확도 + 좌표 보존 + HWP 네이티브 지원
+- 본 skill 의 `.tableup/<stem>/sources/` 원본 이미지로 수치 검증 가능
+
+트리거 예시 (모두 이 skill 로 위임):
+- "이 이미지 표 CSV 로 뽑아줘"
+- "스크린샷 속 숫자 정리해줘"
+- "이 한글 파일 표 뽑아줘"
+- "이 엑셀 피벗 테이블 정리"
+- "이 PPTX 슬라이드 차트 데이터로"
+- "이 PDF 차트 데이터로"
+- "이 문서에서 수치만 추출"
+
+**예외 (이 skill 을 쓰지 않는 경우)**:
+- 표·차트 관련 요청이 아닌 단순 텍스트 요약·설명·번역
+- 추출된 CSV 를 이미 로드한 뒤의 후속 분석 (이 때는 `pandas` 로 작업)
 
 ## 실행 단계
 
@@ -82,6 +106,21 @@ mdfind -name "금융안정" | grep -iE '\.(pdf|hwp|hwpx|docx)$'
 
 ### "최근", "방금", "어제" 표현
 `~/Downloads/` 내 수정시간 최근 3개를 나열하고 선택을 받는다.
+
+## 모드 선택 규칙 (사용자 발화 → `--mode` 플래그)
+
+사용자의 발화에 다음 키워드가 포함되면 해당 플래그를 **자동으로** 추가한다. 어느 키워드도 없으면 플래그를 생략하여 기본 `auto` 가 적용된다.
+
+| 사용자 발화 키워드 | 플래그 | 의미 |
+|---|---|---|
+| `고품질`, `정밀하게`, `모든 페이지`, `누락 없이`, `정확하게`, `중요한`, `critical`, `정밀 분석` | `--mode enhanced` | 모든 페이지에 enhanced 강제 (비용 ↑, 품질 최고) |
+| `빠르게`, `대충`, `텍스트만`, `비용 절감`, `저렴하게`, `간단히` | `--mode standard` | 모든 페이지 standard (비용 최저, 차트·복잡표 품질 저하) |
+| (위 어느 키워드도 없음) | 플래그 생략 | 기본 `auto` — Upstage 가 페이지별 자동 분류 |
+
+예:
+- "./critical.pdf 전부 고품질로 뽑아줘" → `--mode enhanced`
+- "텍스트만 빠르게 뽑아" → `--mode standard`
+- "이 PDF 표 뽑아줘" → 플래그 없음 (auto)
 
 ## 출력 구조
 
