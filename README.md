@@ -36,6 +36,17 @@ You: 이 PDF에서 표 뽑아줘 — ./report.pdf
 Claude Code: [Upstage Enhanced 호출 → .tableup/ 생성 → 요약 안내]
 ```
 
+### 부분 파일명으로 자동 검색 (경로 입력 부담 ↓)
+```
+You: AI 보고서 PDF 표 뽑아줘
+Claude Code: [Glob으로 ~/Downloads 검색 → 자동 매칭 → 실행]
+
+# 또는 직접 CLI:
+python scripts/tableup.py --search "AI 보고서"
+```
+검색 경로: **CWD · ~/Downloads · ~/Desktop · ~/Documents**  
+macOS 한글 파일명(NFD) 자동 정규화.
+
 ### 페이지 범위 지정
 ```
 You: /tableup ./large.pdf 로 p.12~15 재무제표만 뽑아줘
@@ -75,7 +86,10 @@ Claude Code: [.tableup/t00_p3_credit-growth-rate.csv 로드 → pandas 분석]
 
 ```
 python scripts/tableup.py <pdf> [옵션]
+# 또는
+python scripts/tableup.py --search <키워드> [옵션]
 
+--search <키워드>  부분 파일명으로 PDF 검색 (CWD/Downloads/Desktop/Documents)
 --pages N-M        특정 페이지 범위 (예: 12-15)
 --no-source        원본 페이지 PNG 생성 생략
 --excel            xlsx 동시 생성
