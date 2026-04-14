@@ -10,7 +10,13 @@
 set -euo pipefail
 
 SKILL_NAME="upparse"
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC_DIR="${REPO_DIR}/skills/upparse"
+
+if [[ ! -f "${SRC_DIR}/SKILL.md" ]]; then
+    echo "❌ 스킬 디렉터리를 찾지 못했습니다: ${SRC_DIR}" >&2
+    exit 1
+fi
 
 # ---- OS 감지 ----
 UNAME_S="$(uname -s 2>/dev/null || echo unknown)"
@@ -128,10 +134,10 @@ fi
 
 echo ""
 echo "🔧 의존성 설치:"
-echo "   pip install -r ${SRC_DIR}/requirements.txt"
+echo "   pip install -r ${REPO_DIR}/requirements.txt"
 echo ""
 echo "🔑 API 키 설정 (아직 안 했다면):"
-echo "   ${SRC_DIR}/.env 파일에 UPSTAGE_API_KEY=... 로 저장"
+echo "   ${REPO_DIR}/.env 파일에 UPSTAGE_API_KEY=... 로 저장"
 echo ""
 echo "🚀 Claude Code 재시작 후 /upparse 로 호출 가능합니다."
 

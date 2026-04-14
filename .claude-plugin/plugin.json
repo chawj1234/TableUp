@@ -1,0 +1,11 @@
+{
+  "name": "upparse",
+  "version": "1.0.0",
+  "description": "PDF·이미지·Office·HWP 문서에서 표·차트·도식을 CSV로 정확히 추출 (Upstage Document Parse)",
+  "author": {
+    "name": "chawj1234",
+    "url": "https://github.com/chawj1234"
+  },
+  "homepage": "https://github.com/chawj1234/UpParse",
+  "license": "MIT"
+}
