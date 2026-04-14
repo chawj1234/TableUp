@@ -1,9 +1,9 @@
 """Upstage Document Parse 클라이언트.
 
 설계 결정 (2026-04 기준):
-- Async + enhanced/auto 조합에 Upstage 서버 이슈 재현됨 → 본 클라이언트는 sync 만 사용
+- Async 엔드포인트에 서버 이슈 재현됨 → 본 클라이언트는 sync 만 사용
 - Sync 엔드포인트의 100페이지 제한은 클라이언트에서 chunk 분할 + 2-way 병렬 호출로 극복
-- 기본 모드는 `auto` (페이지별 자동 분류). `enhanced`, `standard` 도 선택 가능.
+- UpParse 는 항상 가장 정확한 추출 옵션을 사용한다 (CLI 에서 모드를 노출하지 않음).
 
 환경변수 오버라이드:
 - UPPARSE_MAX_WORKERS: 동시 chunk 호출 수 (기본 2, Upstage rate limit 2 RPS 안전 범위)
@@ -213,7 +213,7 @@ def _merge_responses(responses: list[dict], page_offsets: list[int]) -> dict:
 def run_pipeline(
     file_path: str | Path,
     *,
-    mode: str = "auto",
+    mode: str = "enhanced",
     on_progress: Callable[[int, int], None] | None = None,
     chunk_cache_dir: Path | None = None,
     chunk_size: int | None = None,

@@ -8,7 +8,6 @@ Usage:
     python scripts/upparse.py --search "<키워드>" [옵션]
 
 옵션:
-    --mode {auto,enhanced,standard}  Upstage 처리 모드 (기본: auto, 페이지별 자동 분류)
     --pages N-M         PDF 특정 페이지 범위 (비-PDF 에선 무시)
     --no-source         원본 페이지 PNG 생성 생략 (PDF 만 해당)
     --excel             .xlsx 파일도 함께 생성
@@ -424,42 +423,63 @@ def _resolve_source(args: argparse.Namespace) -> Path:
 
 def _maybe_extract_range(
     src_path: Path, args: argparse.Namespace, src_is_pdf: bool
-) -> Path:
-    """필요 시 페이지 범위 추출 후 업로드용 경로 반환. 아니면 원본 그대로."""
+) -> tuple[Path, int]:
+    """필요 시 페이지 범위 추출 후 업로드용 경로와 페이지 오프셋(start-1)을 반환.
+
+    오프셋은 Upstage 응답의 element.page (슬라이스 기준 1-based) 를 원본 PDF 기준
+    페이지로 환원하기 위해 사용된다. --pages 미사용 또는 비-PDF 면 offset 0.
+    """
     if not args.pages:
-        return src_path
+        return src_path, 0
     if not src_is_pdf:
         print(
             f"⚠️  --pages 는 PDF 에서만 유효합니다. {src_path.suffix} 는 전체 처리됩니다.",
             file=sys.stderr,
         )
-        return src_path
+        return src_path, 0
     start, end = parse_page_range(args.pages)
     print(f"🔖 페이지 {start}-{end} 만 추출합니다", file=sys.stderr)
-    return extract_page_range(src_path, start, end)
+    return extract_page_range(src_path, start, end), start - 1
+
+
+def _apply_page_offset(response: dict, offset: int) -> None:
+    """응답 elements 의 page 번호에 offset 을 더해 원본 PDF 기준으로 환원한다.
+
+    --pages N-M 사용 시 Upstage 는 슬라이스된 1페이지부터 번호를 매기므로,
+    CSV 파일명·meta.json·sources/ PNG 렌더링이 모두 원본 페이지와 일치하도록
+    상위에서 오프셋을 주입한다.
+    """
+    if not offset:
+        return
+    for el in response.get("elements", []):
+        if "page" in el:
+            el["page"] = el["page"] + offset
+
+
+_EXTRACTION_MODE = "enhanced"  # 가장 정확한 추출을 항상 사용한다. 다른 값은 지원하지 않음.
 
 
 def _run_or_cache(
-    upload_path: Path, *, mode: str, force: bool, on_progress_cb
+    upload_path: Path, *, force: bool, on_progress_cb
 ) -> tuple[str, dict]:
     """캐시 조회 후 히트면 복원, 미스면 API 호출 후 캐시 저장. (sha, response) 반환."""
     sha = sha256_file(upload_path)
     if not force:
-        cached = load_cached_response(sha, mode)
+        cached = load_cached_response(sha, _EXTRACTION_MODE)
         if cached is not None:
-            print(f"⚡ 캐시에서 복원 (mode={mode}, API 호출 생략)", file=sys.stderr)
+            print("⚡ 캐시에서 복원 (API 호출 생략)", file=sys.stderr)
             return sha, cached
 
-    print(f"🚀 Upstage Document Parse (mode={mode}) 호출 중...", file=sys.stderr)
+    print("🚀 Upstage Document Parse 호출 중...", file=sys.stderr)
     try:
         response = run_pipeline(
-            upload_path, mode=mode, on_progress=on_progress_cb, source_sha=sha
+            upload_path, mode=_EXTRACTION_MODE, on_progress=on_progress_cb, source_sha=sha
         )
     except UpstageError as e:
         raise SystemExit(f"\n❌ {e}")
     if _is_tty():
         print("", file=sys.stderr)  # 진행바 개행
-    save_cached_response(sha, mode, response)
+    save_cached_response(sha, _EXTRACTION_MODE, response)
     return sha, response
 
 
@@ -509,12 +529,6 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="UpParse — 문서 표·차트·도식 추출")
     ap.add_argument("file", nargs="?", help="처리할 파일 경로 (--search 사용 시 생략 가능)")
     ap.add_argument("--search", help="부분 파일명으로 검색 (CWD/Downloads/Desktop/Documents)")
-    ap.add_argument(
-        "--mode",
-        choices=["auto", "enhanced", "standard"],
-        default="auto",
-        help="Upstage 처리 모드 (기본: auto — 페이지별 자동 분류)",
-    )
     ap.add_argument("--pages", help="PDF 페이지 범위 (예: 12-15 또는 12). 비-PDF 에선 무시.")
     ap.add_argument("--no-source", action="store_true", help="원본 페이지 PNG 생성 생략")
     ap.add_argument("--excel", action="store_true", help="xlsx 파일도 생성")
@@ -526,13 +540,16 @@ def main() -> int:
     src_path = _resolve_source(args)
     src_is_pdf = is_pdf(src_path)
 
-    # 2. (PDF + --pages) 면 임시 추출
-    upload_path = _maybe_extract_range(src_path, args, src_is_pdf)
+    # 2. (PDF + --pages) 면 임시 추출 + 페이지 오프셋 계산
+    upload_path, page_offset = _maybe_extract_range(src_path, args, src_is_pdf)
 
     # 3. API 호출 또는 캐시 복원
     sha, response = _run_or_cache(
-        upload_path, mode=args.mode, force=args.force, on_progress_cb=on_progress
+        upload_path, force=args.force, on_progress_cb=on_progress
     )
+
+    # 3-b. --pages 슬라이스의 1-based 페이지 번호를 원본 PDF 기준으로 환원
+    _apply_page_offset(response, page_offset)
 
     # 4. 출력 디렉토리 안전 준비
     is_default = args.out is None

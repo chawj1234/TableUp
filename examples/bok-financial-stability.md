@@ -16,7 +16,7 @@ python scripts/upparse.py "AI의 빠른 확산과 생산성 효과-한국은행.
 ## stdout 요약
 
 ```
-🚀 Upstage Document Parse (mode=auto) 호출 중...
+🚀 Upstage Document Parse 호출 중...
   [██████████████████████████████] 25/25 페이지 (100%)
 🖼️  원본 페이지 17장 렌더링 중...
 
@@ -61,12 +61,11 @@ Claude: [c01_p5_*.csv 를 pandas 로 로드]
 
 ## 처리 시간
 
-- API 호출: 25페이지, auto 모드 기준 약 60~90초
+- API 호출: 25페이지 기준 약 60~120초
 - 캐시 히트 재호출: < 1초 (API 호출 0)
 - 원본 페이지 렌더링(17장): ~4초
 
 ## 비용
 
-- auto 모드는 페이지별 standard/enhanced 자동 혼합 → 25페이지 기준 약 **$0.30~$0.75**
-  (모든 페이지에 enhanced 강제 시 $0.75, 전부 standard 시 $0.25)
+- 25페이지 기준 약 **$0.75** (Upstage 페이지당 가격 기반)
 - 캐시 덕에 동일 파일 재실행 시 $0
