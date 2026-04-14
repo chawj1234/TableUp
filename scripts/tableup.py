@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import sys
+import unicodedata
 from pathlib import Path
 
 # scripts/ 를 경로에 추가하여 sibling 모듈을 import 가능하게 함
@@ -172,9 +173,62 @@ def write_excel_copies(result, output_dir: Path) -> None:
             df.to_excel(writer, sheet_name=sheet, index=False)
 
 
+DEFAULT_SEARCH_DIRS = (
+    Path.cwd(),
+    Path.home() / "Downloads",
+    Path.home() / "Desktop",
+    Path.home() / "Documents",
+)
+
+
+def _normalize(s: str) -> str:
+    """macOS NFD 파일명과 NFC 사용자 입력의 호환성을 위해 NFC 로 통일한다."""
+    return unicodedata.normalize("NFC", s).lower()
+
+
+def resolve_by_search(term: str) -> Path:
+    """부분 파일명으로 PDF 를 찾는다. 대소문자·NFD/NFC 무시, 최근 수정 순 정렬.
+
+    검색 경로: CWD, ~/Downloads, ~/Desktop, ~/Documents
+    """
+    term_n = _normalize(term)
+    matches: list[Path] = []
+    seen: set[Path] = set()
+    for d in DEFAULT_SEARCH_DIRS:
+        if not d.exists():
+            continue
+        for f in d.glob("*.pdf"):
+            rp = f.resolve()
+            if rp in seen:
+                continue
+            if term_n in _normalize(f.stem):
+                seen.add(rp)
+                matches.append(f)
+
+    if not matches:
+        raise SystemExit(
+            f"❌ '{term}' 과 매칭되는 PDF 없음.\n"
+            f"   검색 경로: CWD, ~/Downloads, ~/Desktop, ~/Documents"
+        )
+
+    matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+    if len(matches) > 1:
+        msg = [f"⚠️  '{term}' 과 매칭되는 PDF 가 여러 개입니다. 더 구체적인 키워드로 재시도하세요:"]
+        for m in matches[:10]:
+            msg.append(f"   • {m}")
+        if len(matches) > 10:
+            msg.append(f"   ... 외 {len(matches) - 10}개")
+        raise SystemExit("\n".join(msg))
+
+    print(f"🔍 찾은 파일: {matches[0]}", file=sys.stderr)
+    return matches[0]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="TableUp — PDF 표·차트 추출")
-    ap.add_argument("pdf", help="처리할 PDF 경로")
+    ap.add_argument("pdf", nargs="?", help="처리할 PDF 경로 (--search 사용 시 생략 가능)")
+    ap.add_argument("--search", help="부분 파일명으로 PDF 검색 (CWD/Downloads/Desktop/Documents)")
     ap.add_argument("--pages", help="페이지 범위 (예: 12-15 또는 12)", default=None)
     ap.add_argument("--no-source", action="store_true", help="원본 페이지 PNG 생성 생략")
     ap.add_argument("--excel", action="store_true", help="xlsx 파일도 생성")
@@ -182,7 +236,20 @@ def main() -> int:
     ap.add_argument("--force", action="store_true", help="캐시 무시")
     args = ap.parse_args()
 
-    pdf_path = Path(args.pdf).expanduser().resolve()
+    if not args.pdf and not args.search:
+        ap.error("PDF 경로 또는 --search 중 하나는 반드시 필요합니다.")
+
+    if args.search and args.pdf:
+        print(
+            "⚠️  PDF 경로와 --search 를 모두 주셨습니다. 경로를 우선 사용합니다.",
+            file=sys.stderr,
+        )
+
+    if args.pdf:
+        pdf_path = Path(args.pdf).expanduser().resolve()
+    else:
+        pdf_path = resolve_by_search(args.search).resolve()
+
     if not pdf_path.exists():
         print(f"❌ 파일 없음: {pdf_path}", file=sys.stderr)
         return 1
