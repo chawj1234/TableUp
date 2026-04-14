@@ -9,8 +9,7 @@ Usage:
     TABLEUP_EVAL_BOK_AI     BoK AI 보고서 PDF 경로 (기본: evals/fixtures/bok_ai_report.pdf)
     TABLEUP_EVAL_BOK_MAIN   BoK 금융안정보고서 PDF 경로 (기본: evals/fixtures/bok_financial_stability_main.pdf)
 
-fixtures PDF 가 없으면 BoK 공식 URL 에서 자동 다운로드합니다 (main 한정).
-AI 보고서는 공식 URL 가 안정적이지 않으니 사용자가 직접 배치하세요.
+fixtures PDF 가 없으면 BoK 공식 URL 에서 자동 다운로드합니다.
 """
 from __future__ import annotations
 
@@ -45,10 +44,11 @@ BOK_MAIN_URL = (
     "https://www.bok.or.kr/fileSrc/portal/"
     "4f1a9e7acede40168fde41d1e555d2f4/5/d9b3fe9fbcec4bee83171092b6da2654.pdf"
 )
-
-# 레거시 개발 경로 (과거 개발 환경에서 사용하던 로컬 경로). fixture 미존재 시 폴백.
-LEGACY_BOK_AI = Path("/Users/chawj/Downloads/AI의 빠른 확산과 생산성 효과-한국은행.pdf")
-LEGACY_BOK_MAIN = Path("/tmp/tableup_test2/main.pdf")
+# BOK 이슈노트 [제2025-22호] AI의 빠른 확산과 생산성 효과
+BOK_AI_URL = (
+    "https://www.bok.or.kr/fileSrc/portal/"
+    "4328064bf5fa45ac8b118692ba3c4644/1/dc9d59003d50427d8735ee8830d4b853.pdf"
+)
 
 SUBPROCESS_TIMEOUT = 900  # 15분
 
@@ -80,12 +80,10 @@ class EvalResult:
 # -------- 공용 헬퍼 --------
 
 
-def _resolve_fixture(primary: Path, legacy: Path, url: str | None) -> Path:
-    """fixture 경로 → 레거시 경로 → URL 다운로드 순으로 시도."""
+def _resolve_fixture(primary: Path, url: str | None) -> Path:
+    """fixture 경로 → URL 다운로드 순으로 시도."""
     if primary.exists():
         return primary
-    if legacy.exists():
-        return legacy
     if url:
         import urllib.request
 
@@ -97,7 +95,8 @@ def _resolve_fixture(primary: Path, legacy: Path, url: str | None) -> Path:
         return primary
     raise SystemExit(
         f"❌ 필요한 fixture 파일이 없습니다: {primary}\n"
-        f"   환경변수로 경로를 지정하거나 위 경로에 파일을 배치하세요."
+        f"   환경변수(TABLEUP_EVAL_BOK_AI / TABLEUP_EVAL_BOK_MAIN)로 경로를 지정하거나\n"
+        f"   위 경로에 파일을 배치하세요."
     )
 
 
@@ -141,7 +140,7 @@ def _within_tolerance(actual: float, expected: float, tol: float = 0.05) -> bool
 
 def eval_complex_table() -> EvalResult:
     print("\n▶ Eval 1: 복잡 표 추출 (BoK 금융안정보고서 p.6 취약차주 표)")
-    pdf = _resolve_fixture(BOK_MAIN_PDF, LEGACY_BOK_MAIN, BOK_MAIN_URL)
+    pdf = _resolve_fixture(BOK_MAIN_PDF, BOK_MAIN_URL)
     out_dir = RESULTS / "e01_complex_table"
     run_tableup(pdf, out_dir)
 
@@ -184,7 +183,7 @@ def eval_complex_table() -> EvalResult:
 
 def eval_chart_to_data() -> EvalResult:
     print("\n▶ Eval 2: 차트→데이터 (BoK AI 보고서 p.5)")
-    pdf = _resolve_fixture(BOK_AI_PDF, LEGACY_BOK_AI, None)
+    pdf = _resolve_fixture(BOK_AI_PDF, BOK_AI_URL)
     out_dir = RESULTS / "e02_chart_to_data"
     run_tableup(pdf, out_dir)
 
@@ -245,7 +244,7 @@ def eval_chart_to_data() -> EvalResult:
 
 def eval_hwp_derived() -> EvalResult:
     print("\n▶ Eval 3: HWP 유래 PDF 전체 처리 (BoK 금융안정보고서 77p)")
-    pdf = _resolve_fixture(BOK_MAIN_PDF, LEGACY_BOK_MAIN, BOK_MAIN_URL)
+    pdf = _resolve_fixture(BOK_MAIN_PDF, BOK_MAIN_URL)
     out_dir = RESULTS / "e03_hwp_derived"
     run_tableup(pdf, out_dir)
 

@@ -24,12 +24,48 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sys
 import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+
+
+def _load_dotenv_if_present() -> None:
+    """CWD 또는 스크립트 조상 디렉터리의 .env 를 환경변수에 최소 파싱으로 주입한다.
+
+    이미 설정된 환경변수는 덮어쓰지 않는다. KEY=VALUE 한 줄 형식만 지원
+    (따옴표·공백 trim, `#` 시작 주석 무시). python-dotenv 의존성 없이 동작.
+    """
+    candidates: list[Path] = [Path.cwd() / ".env"]
+    here = Path(__file__).resolve().parent
+    for parent in (here, *here.parents):
+        candidates.append(parent / ".env")
+        if (parent / ".git").exists():
+            break
+    seen: set[Path] = set()
+    for p in candidates:
+        if p in seen or not p.is_file():
+            seen.add(p)
+            continue
+        seen.add(p)
+        try:
+            for line in p.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, v = s.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+        except OSError:
+            continue
+
+
+_load_dotenv_if_present()
 
 from extract import extract_all, write_index_md, write_meta_json  # noqa: E402
 from upstage_client import (  # noqa: E402
@@ -40,7 +76,15 @@ from upstage_client import (  # noqa: E402
 )
 
 
-CACHE_DIR = Path.home() / ".cache" / "tableup"
+def _resolve_cache_dir() -> Path:
+    """TABLEUP_CACHE_DIR override 지원. 기본은 ~/.cache/tableup."""
+    env = os.environ.get("TABLEUP_CACHE_DIR")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".cache" / "tableup"
+
+
+CACHE_DIR = _resolve_cache_dir()
 
 SUPPORTED_EXTS = {
     ".pdf",
@@ -49,11 +93,17 @@ SUPPORTED_EXTS = {
     ".hwp", ".hwpx",
 }
 
+# 한글 로케일의 Finder 는 Downloads/Desktop/Documents 를 현지화 표시만 하지만,
+# 사용자가 직접 만든 `~/다운로드` 같은 디렉터리도 있을 수 있어 함께 후보에 둔다.
+# 존재하지 않는 경로는 검색 루프에서 스킵된다.
 DEFAULT_SEARCH_DIRS = (
     Path.cwd(),
     Path.home() / "Downloads",
     Path.home() / "Desktop",
     Path.home() / "Documents",
+    Path.home() / "다운로드",
+    Path.home() / "바탕화면",
+    Path.home() / "문서",
 )
 
 
@@ -191,7 +241,13 @@ def load_cached_response(sha256: str, mode: str) -> dict | None:
 
 
 def save_cached_response(sha256: str, mode: str, response: dict) -> None:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise SystemExit(
+            f"❌ 캐시 디렉터리 생성 실패: {CACHE_DIR}\n"
+            f"   TABLEUP_CACHE_DIR 환경변수로 쓰기 가능한 경로를 지정하세요. ({e})"
+        )
     get_cache_path(sha256, mode).write_text(
         json.dumps(response, ensure_ascii=False), encoding="utf-8"
     )

@@ -1,4 +1,6 @@
-pypdfium2>=4.30.0
-pandas>=2.0.0
-lxml>=4.9.0
-beautifulsoup4>=4.12.0
+# Python 3.10+ 필요 (union type syntax `str | Path` 사용)
+pypdfium2>=4.30.0,<5
+pandas>=2.0.0,<3
+lxml>=4.9.0,<6
+beautifulsoup4>=4.12.0,<5
+openpyxl>=3.1.0,<4  # --excel 플래그 사용 시 필요

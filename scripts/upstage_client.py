@@ -32,6 +32,14 @@ REQUEST_TIMEOUT = 900  # 최대 15분
 DEFAULT_MAX_WORKERS = int(os.environ.get("TABLEUP_MAX_WORKERS", "2"))
 
 
+def _default_cache_dir() -> Path:
+    """tableup.py 와 동일하게 TABLEUP_CACHE_DIR override 를 존중한다."""
+    env = os.environ.get("TABLEUP_CACHE_DIR")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".cache" / "tableup"
+
+
 class UpstageError(Exception):
     """Upstage API 호출 실패."""
 
@@ -243,8 +251,14 @@ def run_pipeline(
         return resp
 
     # chunk 분할
-    chunk_cache_dir = chunk_cache_dir or (Path.home() / ".cache" / "tableup" / "chunks")
-    chunk_cache_dir.mkdir(parents=True, exist_ok=True)
+    chunk_cache_dir = chunk_cache_dir or (_default_cache_dir() / "chunks")
+    try:
+        chunk_cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise UpstageError(
+            f"chunk 캐시 디렉터리 생성 실패: {chunk_cache_dir}\n"
+            f"   TABLEUP_CACHE_DIR 환경변수로 쓰기 가능한 경로를 지정하세요. ({e})"
+        ) from e
     prefix = f"{source_sha[:8]}_" if source_sha else ""
 
     chunk_specs: list[tuple[int, int, Path]] = []

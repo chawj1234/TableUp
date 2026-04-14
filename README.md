@@ -22,16 +22,19 @@ Upstage Document Parse 를 **`auto` 모드 (페이지별 자동 분류) 기본**
 
 ## 🚀 설치
 
+**요구사항**: Python 3.10 이상, macOS/Linux (Windows 는 WSL2 권장)
+
 ```bash
 git clone https://github.com/chawj1234/TableUp.git
 cd TableUp
 pip install -r requirements.txt
 ./install.sh
-export UPSTAGE_API_KEY="up_..." 
+echo 'UPSTAGE_API_KEY=up_...' > .env
 ```
-`UPSTAGE_API_KEY`는 [Upstage Console](https://console.upstage.ai) 에서 발급
 
-`install.sh` 는 `~/.claude/skills/tableup/` 에 심링크를 만듭니다. Claude Code 를 재시작하면 자동 인식되고, **"표 뽑아줘"** 같은 자연어로 트리거됩니다.
+`UPSTAGE_API_KEY` 는 [Upstage Console](https://console.upstage.ai) 에서 발급.
+
+`install.sh` 는 Claude Code skills 디렉터리에 심링크를 만듭니다. 재시작하면 자동 인식되고, **"표 뽑아줘"** 같은 자연어로 트리거됩니다.
 
 ---
 
